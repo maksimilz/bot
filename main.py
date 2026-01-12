@@ -82,8 +82,8 @@ def is_join(old_status: ChatMemberStatus, new_status: ChatMemberStatus) -> bool:
 
 @router.chat_member()
 async def on_chat_member_updated(update: ChatMemberUpdated, bot: Bot) -> None:
-    target_chat_id = int(os.environ["-1001641336614"])
-    admin_id = int(os.environ["454046983"])
+    target_chat_id = int(os.environ["TARGET_CHAT_ID"])
+    admin_id = int(os.environ["ADMIN_ID"])
 
     if update.chat.id != target_chat_id:
         return
@@ -175,8 +175,8 @@ async def start_web_server() -> None:
 
 
 async def main() -> None:
-    token = os.environ["7675580054:AAGiX0dqQRkr0wKrnbvCy_LViQyjrdm8cN0"]
-    admin_id = int(os.environ["454046983"])
+    token = os.environ["BOT_TOKEN"]
+    admin_id = int(os.environ["ADMIN_ID"])
 
     await load_events()
 

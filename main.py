@@ -1,200 +1,130 @@
+import asyncio
 import os
 import json
-import asyncio
-from dataclasses import dataclass
-from datetime import datetime, date, time
+import logging
+import sys
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from aiohttp import web
-
 from aiogram import Bot, Dispatcher, Router
-from aiogram.filters import Command
-from aiogram.types import ChatMemberUpdated, Message
-from aiogram.enums import ChatMemberStatus
+from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER
+from aiogram.types import ChatMemberUpdated
+from aiohttp import web
+import gspread
 
+# --- НАСТРОЙКИ ---
+# Токен и ID админа берем из переменных окружения
+TOKEN = os.environ.get("BOT_TOKEN")
+ADMIN_ID = os.environ.get("ADMIN_ID") # Render хранит как строку, преобразуем ниже
 
-DATA_FILE = "events.json"
-EVENTS_LOCK = asyncio.Lock()
+# ИМЯ ВАШЕЙ ТАБЛИЦЫ (должно совпадать буква в букву с названием в Google)
+SHEET_NAME = "График подписчиков" 
 
+# --- Инициализация Google Таблиц ---
+def get_sheet():
+    creds_json = os.environ.get("G_SHEETS_KEY")
+    if not creds_json:
+        logging.error("❌ ОШИБКА: Нет ключа G_SHEETS_KEY в переменных окружения")
+        return None
+    
+    try:
+        creds_dict = json.loads(creds_json)
+        gc = gspread.service_account_from_dict(creds_dict)
+        # Открываем таблицу по имени
+        sh = gc.open(SHEET_NAME)
+        # Возвращаем первый лист
+        return sh.sheet1
+    except Exception as e:
+        logging.error(f"❌ Ошибка подключения к Google Таблице: {e}")
+        return None
+
+# --- БОТ ---
 router = Router()
 
+def _tz():
+    # Московское время
+    return ZoneInfo("Europe/Moscow")
 
-@dataclass
-class JoinEvent:
-    ts_iso: str
-    user_id: int
-    username: str | None
-    full_name: str
+@router.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> MEMBER))
+async def on_user_join(event: ChatMemberUpdated, bot: Bot):
+    user = event.new_chat_member.user
+    now = datetime.now(_tz())
+    
+    # Данные подписчика
+    date_str = now.strftime("%d.%m.%Y")
+    time_str = now.strftime("%H:%M:%S")
+    full_name = user.full_name or "Без имени"
+    username = f"@{user.username}" if user.username else ""
+    user_id = str(user.id)
 
-    def to_dict(self) -> dict:
-        return {
-            "ts_iso": self.ts_iso,
-            "user_id": self.user_id,
-            "username": self.username,
-            "full_name": self.full_name,
-        }
+    logging.info(f"🔔 Новый подписчик: {full_name} ({user_id})")
 
-
-events: list[dict] = []
-
-
-def _tz() -> ZoneInfo:
-    return ZoneInfo(os.getenv("TZ", "Europe/Moscow"))
-
-
-def parse_date(s: str) -> date:
-    s = s.strip()
-    for fmt in ("%d.%m.%Y", "%d.%m"):
+    # 1. Пробуем записать в Google Таблицу
+    sheet_status = "❌ Не записано в таблицу"
+    worksheet = get_sheet()
+    if worksheet:
         try:
-            dt = datetime.strptime(s, fmt)
-            if fmt == "%d.%m":
-                dt = dt.replace(year=datetime.now(_tz()).year)
-            return dt.date()
-        except ValueError:
-            pass
-    raise ValueError("Неверный формат даты. Используйте ДД.ММ или ДД.ММ.ГГГГ")
+            # Добавляем строку: Дата | Время | ID | Имя | Username
+            worksheet.append_row([date_str, time_str, user_id, full_name, username])
+            sheet_status = "✅ Сохранено в Google Таблицу"
+        except Exception as e:
+            logging.error(f"Ошибка записи в таблицу: {e}")
+            sheet_status = f"❌ Ошибка записи: {e}"
+    else:
+        sheet_status = "❌ Таблица не найдена или нет доступа"
 
-
-async def load_events() -> None:
-    global events
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            events = json.load(f)
-        if not isinstance(events, list):
-            events = []
-    except FileNotFoundError:
-        events = []
-    except Exception:
-        events = []
-
-
-async def save_events() -> None:
-    async with EVENTS_LOCK:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(events, f, ensure_ascii=False, indent=2)
-
-
-def is_join(old_status: ChatMemberStatus, new_status: ChatMemberStatus) -> bool:
-    return (old_status in {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}) and (
-        new_status in {ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED}
-    )
-
-
-@router.chat_member()
-async def on_chat_member_updated(update: ChatMemberUpdated, bot: Bot) -> None:
-    target_chat_id = int(os.environ["TARGET_CHAT_ID"])
-    admin_id = int(os.environ["ADMIN_ID"])
-
-    if update.chat.id != target_chat_id:
-        return
-
-    old_status = update.old_chat_member.status
-    new_status = update.new_chat_member.status
-
-    if not is_join(old_status, new_status):
-        return  # игнорируем отписки/прочие смены статуса
-
-    u = update.new_chat_member.user
-    full_name = (u.full_name or "").strip() or "Без имени"
-    username = u.username
-
-    ts = datetime.now(_tz())
-    ev = JoinEvent(
-        ts_iso=ts.isoformat(),
-        user_id=u.id,
-        username=username,
-        full_name=full_name,
-    )
-
-    events.append(ev.to_dict())
-    try:
-        await save_events()
-    except Exception:
-        # JSON — лишь кэш; основной «архив» — сообщение админу
-        pass
-
-    uname = f"@{username}" if username else "без username"
-    text = (
-        "🔔 Новый подписчик!\n"
-        f"👤 Имя: {full_name} ({uname})\n"
-        f"🆔 ID: {u.id}\n"
-        f"📅 Дата: {ts.strftime('%Y-%m-%d %H:%M:%S')} MSK\n"
-        "Это сообщение сохранено для отчета."
-    )
-    await bot.send_message(admin_id, text)
-
-
-@router.message(Command("report"))
-async def report(message: Message) -> None:
-    # формат: /report 12.01 18.01  (или с годом)
-    parts = (message.text or "").split()
-    if len(parts) < 3:
-        await message.answer("Формат: /report ДД.ММ ДД.ММ  (или ДД.ММ.ГГГГ)")
-        return
-
-    try:
-        d1 = parse_date(parts[1])
-        d2 = parse_date(parts[2])
-    except ValueError as e:
-        await message.answer(str(e))
-        return
-
-    start = datetime.combine(d1, time.min, tzinfo=_tz())
-    end = datetime.combine(d2, time.max, tzinfo=_tz())
-
-    cnt = 0
-    for r in events:
+    # 2. Шлем уведомление админу в личку
+    if ADMIN_ID:
+        text = (
+            f"🔔 <b>Новый подписчик!</b>\n"
+            f"👤 {full_name} ({username})\n"
+            f"🆔 <code>{user_id}</code>\n"
+            f"📅 {date_str} {time_str}\n"
+            f"<i>{sheet_status}</i>"
+        )
         try:
-            ts = datetime.fromisoformat(r["ts_iso"])
-        except Exception:
-            continue
-        if start <= ts <= end:
-            cnt += 1
+            await bot.send_message(int(ADMIN_ID), text, parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Не удалось отправить ЛС админу: {e}")
 
-    await message.answer(
-        f"Новых вступлений за период {d1.strftime('%d.%m.%Y')}–{d2.strftime('%d.%m.%Y')}: {cnt}"
-    )
-
-
-async def start_web_server() -> None:
+# --- ВЕБ-СЕРВЕР (Для Render) ---
+async def start_web_server():
     app = web.Application()
-
-    async def handle_root(_: web.Request) -> web.Response:
-        return web.Response(text="I am alive")
-
-    app.router.add_get("/", handle_root)
-
+    app.router.add_get('/', lambda r: web.Response(text="Bot is running with Google Sheets support"))
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-
-    # держим веб-сервер живым
+    # Держим процесс живым
     await asyncio.Event().wait()
 
+# --- ЗАПУСК ---
+async def main():
+    if not TOKEN:
+        sys.exit("Ошибка: Не задан BOT_TOKEN")
 
-async def main() -> None:
-    token = os.environ["BOT_TOKEN"]
-    admin_id = int(os.environ["ADMIN_ID"])
-
-    await load_events()
-
-    bot = Bot(token=token)
+    bot = Bot(token=TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
 
-    await bot.send_message(admin_id, "Бот запущен и слушает вступления (chat_member).")
+    # При старте проверим связь с таблицей и сообщим админу
+    if ADMIN_ID:
+        try:
+            sheet = get_sheet()
+            if sheet:
+                await bot.send_message(int(ADMIN_ID), "🤖 Бот перезапущен. 🟢 Связь с Google Таблицей: ОК")
+            else:
+                await bot.send_message(int(ADMIN_ID), "🤖 Бот перезапущен. 🔴 ОШИБКА доступа к Таблице (см. логи)")
+        except Exception as e:
+            logging.error(f"Ошибка старта: {e}")
 
+    # Запускаем сервер и бота параллельно
     await asyncio.gather(
         start_web_server(),
-        dp.start_polling(
-            bot,
-            drop_pending_updates=True,
-            allowed_updates=dp.resolve_used_update_types(),
-        ),
+        dp.start_polling(bot)
     )
 
-
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     asyncio.run(main())

@@ -3,7 +3,7 @@ import os
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, Router
@@ -11,14 +11,16 @@ from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER
 from aiogram.types import ChatMemberUpdated
 from aiohttp import web
 import gspread
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- НАСТРОЙКИ ---
-# Токен и ID админа берем из переменных окружения
 TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = os.environ.get("ADMIN_ID") # Render хранит как строку, преобразуем ниже
+ADMIN_ID = os.environ.get("ADMIN_ID")
+SHEET_NAME = "График подписчиков"
 
-# ИМЯ ВАШЕЙ ТАБЛИЦЫ (должно совпадать буква в букву с названием в Google)
-SHEET_NAME = "График подписчиков" 
+# Время отправки ежедневной сводки (по МСК)
+DAILY_REPORT_HOUR = 9  # 09:00 утра
+DAILY_REPORT_MINUTE = 0
 
 # --- Инициализация Google Таблиц ---
 def get_sheet():
@@ -30,9 +32,7 @@ def get_sheet():
     try:
         creds_dict = json.loads(creds_json)
         gc = gspread.service_account_from_dict(creds_dict)
-        # Открываем таблицу по имени
         sh = gc.open(SHEET_NAME)
-        # Возвращаем первый лист
         return sh.sheet1
     except Exception as e:
         logging.error(f"❌ Ошибка подключения к Google Таблице: {e}")
@@ -42,15 +42,52 @@ def get_sheet():
 router = Router()
 
 def _tz():
-    # Московское время
     return ZoneInfo("Europe/Moscow")
+
+# --- ФУНКЦИЯ ПОДСЧЕТА ПОДПИСЧИКОВ ЗА ДЕНЬ ---
+async def send_daily_report(bot: Bot):
+    """Отправляет админу статистику за вчерашний день"""
+    if not ADMIN_ID:
+        return
+    
+    worksheet = get_sheet()
+    if not worksheet:
+        await bot.send_message(int(ADMIN_ID), "❌ Не удалось получить данные из таблицы")
+        return
+    
+    try:
+        # Вчерашняя дата
+        yesterday = (datetime.now(_tz()) - timedelta(days=1)).strftime("%d.%m.%Y")
+        
+        # Получаем все строки из таблицы
+        all_records = worksheet.get_all_records()
+        
+        # Считаем подписчиков за вчерашний день
+        yesterday_count = sum(1 for record in all_records if record.get('Дата') == yesterday)
+        
+        # Общее количество подписчиков
+        total_count = len(all_records)
+        
+        # Формируем сообщение
+        text = (
+            f"📊 <b>Ежедневная сводка</b>\n\n"
+            f"📅 Дата: {yesterday}\n"
+            f"➕ Новых подписчиков: <b>{yesterday_count}</b>\n"
+            f"👥 Всего подписчиков: <b>{total_count}</b>"
+        )
+        
+        await bot.send_message(int(ADMIN_ID), text, parse_mode="HTML")
+        logging.info(f"✅ Отправлена ежедневная сводка: {yesterday_count} подписчиков за {yesterday}")
+        
+    except Exception as e:
+        logging.error(f"Ошибка при формировании ежедневной сводки: {e}")
+        await bot.send_message(int(ADMIN_ID), f"❌ Ошибка при подсчете статистики: {e}")
 
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> MEMBER))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     user = event.new_chat_member.user
     now = datetime.now(_tz())
     
-    # Данные подписчика
     date_str = now.strftime("%d.%m.%Y")
     time_str = now.strftime("%H:%M:%S")
     full_name = user.full_name or "Без имени"
@@ -59,12 +96,10 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
 
     logging.info(f"🔔 Новый подписчик: {full_name} ({user_id})")
 
-    # 1. Пробуем записать в Google Таблицу
     sheet_status = "❌ Не записано в таблицу"
     worksheet = get_sheet()
     if worksheet:
         try:
-            # Добавляем строку: Дата | Время | ID | Имя | Username
             worksheet.append_row([date_str, time_str, user_id, full_name, username])
             sheet_status = "✅ Сохранено в Google Таблицу"
         except Exception as e:
@@ -73,7 +108,6 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     else:
         sheet_status = "❌ Таблица не найдена или нет доступа"
 
-    # 2. Шлем уведомление админу в личку
     if ADMIN_ID:
         text = (
             f"🔔 <b>Новый подписчик!</b>\n"
@@ -87,7 +121,7 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
         except Exception as e:
             logging.error(f"Не удалось отправить ЛС админу: {e}")
 
-# --- ВЕБ-СЕРВЕР (Для Render) ---
+# --- ВЕБ-СЕРВЕР ---
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', lambda r: web.Response(text="Bot is running with Google Sheets support"))
@@ -96,7 +130,6 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    # Держим процесс живым
     await asyncio.Event().wait()
 
 # --- ЗАПУСК ---
@@ -108,18 +141,29 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
 
-    # При старте проверим связь с таблицей и сообщим админу
+    # Настраиваем планировщик для ежедневной сводки
+    scheduler = AsyncIOScheduler(timezone=str(_tz()))
+    scheduler.add_job(
+        send_daily_report,
+        'cron',
+        hour=DAILY_REPORT_HOUR,
+        minute=DAILY_REPORT_MINUTE,
+        args=[bot]
+    )
+    scheduler.start()
+    logging.info(f"⏰ Планировщик запущен. Ежедневная сводка в {DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} МСК")
+
+    # При старте проверим связь с таблицей
     if ADMIN_ID:
         try:
             sheet = get_sheet()
             if sheet:
-                await bot.send_message(int(ADMIN_ID), "🤖 Бот перезапущен. 🟢 Связь с Google Таблицей: ОК")
+                await bot.send_message(int(ADMIN_ID), "🤖 Бот перезапущен. 🟢 Связь с Google Таблицей: ОК\n⏰ Ежедневные сводки активированы")
             else:
                 await bot.send_message(int(ADMIN_ID), "🤖 Бот перезапущен. 🔴 ОШИБКА доступа к Таблице (см. логи)")
         except Exception as e:
             logging.error(f"Ошибка старта: {e}")
 
-    # Запускаем сервер и бота параллельно
     await asyncio.gather(
         start_web_server(),
         dp.start_polling(bot)

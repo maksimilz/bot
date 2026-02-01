@@ -7,8 +7,9 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER
-from aiogram.types import ChatMemberUpdated
+from aiogram.filters import ChatMemberUpdatedFilter, Command, IS_NOT_MEMBER, MEMBER
+from aiogram.types import ChatMemberUpdated, Message
+
 from aiohttp import web
 import gspread
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -98,6 +99,40 @@ async def send_daily_report(bot: Bot):
     except Exception as e:
         logging.error(f"Ошибка при формировании ежедневной сводки: {e}")
         await bot.send_message(ADMIN_ID, f"❌ Ошибка при подсчете статистики: {e}")
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message, bot: Bot):
+    """Отправляет статистику по запросу админа"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    worksheet = get_sheet()
+    if not worksheet:
+        await message.answer("❌ Не удалось получить данные из таблицы")
+        return
+
+    try:
+        # Получаем все строки из таблицы (асинхронно)
+        all_records = await asyncio.to_thread(worksheet.get_all_records)
+        
+        # Сегодняшняя дата
+        today = datetime.now(_tz()).strftime("%d.%m.%Y")
+        
+        # Считаем
+        today_count = sum(1 for record in all_records if record.get('Дата') == today)
+        total_count = len(all_records)
+        
+        text = (
+            f"📊 <b>Текущая статистика</b>\n\n"
+            f"📅 Сегодня: {today}\n"
+            f"➕ Новых сегодня: <b>{today_count}</b>\n"
+            f"👥 Всего подписчиков: <b>{total_count}</b>"
+        )
+        await message.answer(text, parse_mode="HTML")
+        
+    except Exception as e:
+        logging.error(f"Ошибка команды /stats: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> MEMBER))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):

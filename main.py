@@ -15,15 +15,27 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = os.environ.get("ADMIN_ID")
+try:
+    ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
+except (ValueError, TypeError):
+    ADMIN_ID = 0
 SHEET_NAME = "График подписчиков"
+
 
 # Время отправки ежедневной сводки (по МСК)
 DAILY_REPORT_HOUR = 9  # 09:00 утра
 DAILY_REPORT_MINUTE = 0
 
+# Глобальный кэш для таблицы
+_SHEET_CACHE = None
+
+
 # --- Инициализация Google Таблиц ---
 def get_sheet():
+    global _SHEET_CACHE
+    if _SHEET_CACHE:
+        return _SHEET_CACHE
+
     creds_json = os.environ.get("G_SHEETS_KEY")
     if not creds_json:
         logging.error("❌ ОШИБКА: Нет ключа G_SHEETS_KEY в переменных окружения")
@@ -33,10 +45,12 @@ def get_sheet():
         creds_dict = json.loads(creds_json)
         gc = gspread.service_account_from_dict(creds_dict)
         sh = gc.open(SHEET_NAME)
-        return sh.sheet1
+        _SHEET_CACHE = sh.sheet1
+        return _SHEET_CACHE
     except Exception as e:
         logging.error(f"❌ Ошибка подключения к Google Таблице: {e}")
         return None
+
 
 # --- БОТ ---
 router = Router()
@@ -52,21 +66,23 @@ async def send_daily_report(bot: Bot):
     
     worksheet = get_sheet()
     if not worksheet:
-        await bot.send_message(int(ADMIN_ID), "❌ Не удалось получить данные из таблицы")
+        await bot.send_message(ADMIN_ID, "❌ Не удалось получить данные из таблицы")
+
         return
     
     try:
         # Вчерашняя дата
         yesterday = (datetime.now(_tz()) - timedelta(days=1)).strftime("%d.%m.%Y")
         
-        # Получаем все строки из таблицы
-        all_records = worksheet.get_all_records()
+        # Получаем все строки из таблицы (асинхронно в потоке)
+        all_records = await asyncio.to_thread(worksheet.get_all_records)
         
         # Считаем подписчиков за вчерашний день
         yesterday_count = sum(1 for record in all_records if record.get('Дата') == yesterday)
         
         # Общее количество подписчиков
         total_count = len(all_records)
+
         
         # Формируем сообщение
         text = (
@@ -76,12 +92,12 @@ async def send_daily_report(bot: Bot):
             f"👥 Всего подписчиков: <b>{total_count}</b>"
         )
         
-        await bot.send_message(int(ADMIN_ID), text, parse_mode="HTML")
+        await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
         logging.info(f"✅ Отправлена ежедневная сводка: {yesterday_count} подписчиков за {yesterday}")
         
     except Exception as e:
         logging.error(f"Ошибка при формировании ежедневной сводки: {e}")
-        await bot.send_message(int(ADMIN_ID), f"❌ Ошибка при подсчете статистики: {e}")
+        await bot.send_message(ADMIN_ID, f"❌ Ошибка при подсчете статистики: {e}")
 
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> MEMBER))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):
@@ -97,11 +113,14 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     logging.info(f"🔔 Новый подписчик: {full_name} ({user_id})")
 
     sheet_status = "❌ Не записано в таблицу"
+
     worksheet = get_sheet()
     if worksheet:
         try:
-            worksheet.append_row([date_str, time_str, user_id, full_name, username])
+            # Запись в таблицу (асинхронно в потоке)
+            await asyncio.to_thread(worksheet.append_row, [date_str, time_str, user_id, full_name, username])
             sheet_status = "✅ Сохранено в Google Таблицу"
+
         except Exception as e:
             logging.error(f"Ошибка записи в таблицу: {e}")
             sheet_status = f"❌ Ошибка записи: {e}"
@@ -117,7 +136,7 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
             f"<i>{sheet_status}</i>"
         )
         try:
-            await bot.send_message(int(ADMIN_ID), text, parse_mode="HTML")
+            await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
         except Exception as e:
             logging.error(f"Не удалось отправить ЛС админу: {e}")
 
@@ -142,6 +161,7 @@ async def main():
     dp.include_router(router)
 
     # Настраиваем планировщик для ежедневной сводки
+
     scheduler = AsyncIOScheduler(timezone=str(_tz()))
     scheduler.add_job(
         send_daily_report,
@@ -158,9 +178,9 @@ async def main():
         try:
             sheet = get_sheet()
             if sheet:
-                await bot.send_message(int(ADMIN_ID), "🤖 Бот перезапущен. 🟢 Связь с Google Таблицей: ОК\n⏰ Ежедневные сводки активированы")
+                await bot.send_message(ADMIN_ID, "🤖 Бот перезапущен. 🟢 Связь с Google Таблицей: ОК\n⏰ Ежедневные сводки активированы")
             else:
-                await bot.send_message(int(ADMIN_ID), "🤖 Бот перезапущен. 🔴 ОШИБКА доступа к Таблице (см. логи)")
+                await bot.send_message(ADMIN_ID, "🤖 Бот перезапущен. 🔴 ОШИБКА доступа к Таблице (см. логи)")
         except Exception as e:
             logging.error(f"Ошибка старта: {e}")
 

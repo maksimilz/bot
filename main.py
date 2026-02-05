@@ -53,6 +53,48 @@ def get_sheet():
         return None
 
 
+# --- ОЧЕРЕДЬ ЗАПИСИ В ТАБЛИЦУ ---
+SHEET_QUEUE = asyncio.Queue()
+
+async def process_sheet_queue():
+    """Фоновая задача для пакетной записи в таблицу"""
+    while True:
+        rows_to_write = []
+        try:
+            # Ждем первую запись
+            first_item = await SHEET_QUEUE.get()
+            rows_to_write.append(first_item)
+            
+            # Собираем остальные доступные записи в течение короткого времени
+            # (или пока не наберется пачка, например 50 штук)
+            try:
+                while len(rows_to_write) < 50:
+                    # Ждем новую запись максимум 2 секунды, чтобы накопить пачку
+                    item = await asyncio.wait_for(SHEET_QUEUE.get(), timeout=2.0)
+                    rows_to_write.append(item)
+            except (asyncio.TimeoutError, asyncio.QueueEmpty):
+                pass
+            
+            # Если есть что писать
+            if rows_to_write:
+                worksheet = get_sheet()
+                if worksheet:
+                    try:
+                        # Используем to_thread для блокирующего вызова gspread
+                        await asyncio.to_thread(worksheet.append_rows, rows_to_write)
+                        logging.info(f"✅ Успешно записано пачкой: {len(rows_to_write)} строк")
+                    except Exception as e:
+                        logging.error(f"❌ Ошибка пакетной записи ({len(rows_to_write)} строк): {e}")
+                        # В идеале можно вернуть в очередь или сохранить локально, 
+                        # но пока просто логируем, чтобы не зациклить ошибку
+                else:
+                    logging.error("❌ Не удалось получить таблицу для записи (пакет пропущен)")
+
+        except Exception as e:
+            logging.error(f"❌ Критическая ошибка в worker очереди: {e}")
+            await asyncio.sleep(5)  # Пауза перед рестартом цикла, если что-то совсем плохо
+
+
 # --- БОТ ---
 router = Router()
 
@@ -147,20 +189,9 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
 
     logging.info(f"🔔 Новый подписчик: {full_name} ({user_id})")
 
-    sheet_status = "❌ Не записано в таблицу"
-
-    worksheet = get_sheet()
-    if worksheet:
-        try:
-            # Запись в таблицу (асинхронно в потоке)
-            await asyncio.to_thread(worksheet.append_row, [date_str, time_str, user_id, full_name, username])
-            sheet_status = "✅ Сохранено в Google Таблицу"
-
-        except Exception as e:
-            logging.error(f"Ошибка записи в таблицу: {e}")
-            sheet_status = f"❌ Ошибка записи: {e}"
-    else:
-        sheet_status = "❌ Таблица не найдена или нет доступа"
+    # Добавляем в очередь вместо прямой записи
+    await SHEET_QUEUE.put([date_str, time_str, user_id, full_name, username])
+    sheet_status = "⏳ Добавлено в очередь записи"
 
     if ADMIN_ID:
         text = (
@@ -195,6 +226,9 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
 
+    # Запускаем обработчик очереди в фоне
+    asyncio.create_task(process_sheet_queue())
+
     # Настраиваем планировщик для ежедневной сводки
 
     scheduler = AsyncIOScheduler(timezone=str(_tz()))
@@ -213,7 +247,7 @@ async def main():
         try:
             sheet = get_sheet()
             if sheet:
-                await bot.send_message(ADMIN_ID, "🤖 Бот перезапущен. 🟢 Связь с Google Таблицей: ОК\n⏰ Ежедневные сводки активированы")
+                await bot.send_message(ADMIN_ID, "🤖 Бот перезапущен. 🟢 Связь с Google Таблицей: ОК\n⏰ Ежедневные сводки активированы\n📦 Пакетная запись включена")
             else:
                 await bot.send_message(ADMIN_ID, "🤖 Бот перезапущен. 🔴 ОШИБКА доступа к Таблице (см. логи)")
         except Exception as e:

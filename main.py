@@ -54,7 +54,8 @@ def get_sheet():
 
 
 # --- ОЧЕРЕДЬ ЗАПИСИ В ТАБЛИЦУ ---
-SHEET_QUEUE = asyncio.Queue()
+# Очередь будет создана в main(), чтобы избежать создания до запуска event loop
+SHEET_QUEUE = None
 
 async def process_sheet_queue():
     """Фоновая задача для пакетной записи в таблицу"""
@@ -144,7 +145,17 @@ async def send_daily_report(bot: Bot):
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, bot: Bot):
-    """Отправляет статистику по запросу админа"""
+    """
+    Отправляет статистику по запросу админа.
+    
+    ПЕРИОД ПОДСЧЕТА:
+    - "Новых сегодня" считаются все подписчики, у которых в столбце "Дата" 
+      указано текущее календарное число (формат дд.мм.гггг).
+    - Используется московское время (MSK, GMT+3).
+    - Период: с 00:00:00 до 23:59:59 текущего дня по МСК.
+    - Например, если сейчас 05.02.2026 21:00 МСК, то считаются все записи 
+      с датой "05.02.2026", независимо от времени подписки.
+    """
     if message.from_user.id != ADMIN_ID:
         return
 
@@ -157,10 +168,10 @@ async def cmd_stats(message: Message, bot: Bot):
         # Получаем все строки из таблицы (асинхронно)
         all_records = await asyncio.to_thread(worksheet.get_all_records)
         
-        # Сегодняшняя дата
+        # Сегодняшняя дата по МСК (Europe/Moscow)
         today = datetime.now(_tz()).strftime("%d.%m.%Y")
         
-        # Считаем
+        # Считаем подписчиков с датой = сегодня
         today_count = sum(1 for record in all_records if record.get('Дата') == today)
         total_count = len(all_records)
         
@@ -219,6 +230,8 @@ async def start_web_server():
 
 # --- ЗАПУСК ---
 async def main():
+    global SHEET_QUEUE
+    
     if not TOKEN:
         sys.exit("Ошибка: Не задан BOT_TOKEN")
 
@@ -226,6 +239,9 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
 
+    # Создаём очередь после запуска event loop
+    SHEET_QUEUE = asyncio.Queue()
+    
     # Запускаем обработчик очереди в фоне
     asyncio.create_task(process_sheet_queue())
 

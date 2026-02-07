@@ -201,8 +201,18 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     logging.info(f"🔔 Новый подписчик: {full_name} ({user_id})")
 
     # Добавляем в очередь вместо прямой записи
+    # Проверяем размер очереди. Если она небольшая, пишем "Записано"
+    try:
+        q_size = SHEET_QUEUE.qsize()
+    except NotImplementedError:
+        q_size = 0 # Fallback если qsize не реализован (хотя в stdlib asyncio.Queue есть)
+
     await SHEET_QUEUE.put([date_str, time_str, user_id, full_name, username])
-    sheet_status = "⏳ Добавлено в очередь записи"
+    
+    if q_size <= 5:
+        sheet_status = "✅ Записано"
+    else:
+        sheet_status = "⏳ Добавлено в очередь записи"
 
     if ADMIN_ID:
         text = (

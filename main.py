@@ -118,14 +118,16 @@ async def send_daily_report(bot: Bot):
         # Вчерашняя дата
         yesterday = (datetime.now(_tz()) - timedelta(days=1)).strftime("%d.%m.%Y")
         
-        # Получаем все строки из таблицы (асинхронно в потоке)
-        all_records = await asyncio.to_thread(worksheet.get_all_records)
+        # Получаем список дат из первой колонки (асинхронно)
+        # col_values(1) возвращает список значений первого столбца
+        dates = await asyncio.to_thread(worksheet.col_values, 1)
         
-        # Считаем подписчиков за вчерашний день
-        yesterday_count = sum(1 for record in all_records if record.get('Дата') == yesterday)
+        # Считаем подписчиков за вчерашний день. dates - это список строк
+        yesterday_count = dates.count(yesterday)
         
-        # Общее количество подписчиков
-        total_count = len(all_records)
+        # Общее количество подписчиков (минус заголовок, если он есть)
+        # Если список пуст, то 0. Если только заголовок, то 0.
+        total_count = max(0, len(dates) - 1)
 
         
         # Формируем сообщение
@@ -165,15 +167,17 @@ async def cmd_stats(message: Message, bot: Bot):
         return
 
     try:
-        # Получаем все строки из таблицы (асинхронно)
-        all_records = await asyncio.to_thread(worksheet.get_all_records)
+        # Получаем список дат из первой колонки (асинхронно)
+        dates = await asyncio.to_thread(worksheet.col_values, 1)
         
         # Сегодняшняя дата по МСК (Europe/Moscow)
         today = datetime.now(_tz()).strftime("%d.%m.%Y")
         
         # Считаем подписчиков с датой = сегодня
-        today_count = sum(1 for record in all_records if record.get('Дата') == today)
-        total_count = len(all_records)
+        today_count = dates.count(today)
+        
+        # Общее количество (минус заголовок)
+        total_count = max(0, len(dates) - 1)
         
         text = (
             f"📊 <b>Текущая статистика</b>\n\n"

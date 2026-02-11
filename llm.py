@@ -1,0 +1,89 @@
+"""
+Модуль интеграции с OpenRouter LLM.
+
+Использование:
+    from llm import ask_llm
+
+    answer = await ask_llm("Привет, как дела?")
+    answer = await ask_llm(
+        prompt="Объясни кратко что такое Python",
+        system_prompt="Ты дружелюбный помощник. Отвечай кратко."
+    )
+
+Перед использованием задай переменные окружения:
+    OPENROUTER_API_KEY  — API-ключ OpenRouter (обязательно)
+    OPENROUTER_MODEL    — модель (по умолчанию openai/gpt-3.5-turbo)
+"""
+import logging
+
+import aiohttp
+
+from config import OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_BASE_URL
+
+
+async def ask_llm(
+    prompt: str,
+    system_prompt: str = "",
+    max_tokens: int = 1024,
+    temperature: float = 0.7,
+) -> str | None:
+    """
+    Отправляет запрос к OpenRouter API и возвращает текст ответа.
+
+    Args:
+        prompt: Текст сообщения пользователя.
+        system_prompt: Системный промпт (необязательно).
+        max_tokens: Максимальное количество токенов в ответе.
+        temperature: Температура генерации (0.0 — детерминированно, 1.0 — креативно).
+
+    Returns:
+        Текст ответа модели или None при ошибке.
+    """
+    if not OPENROUTER_API_KEY:
+        logging.warning("⚠️ OPENROUTER_API_KEY не задан — LLM запрос пропущен")
+        return None
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                OPENROUTER_BASE_URL,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logging.error(
+                        f"❌ OpenRouter API ошибка {resp.status}: {error_text}"
+                    )
+                    return None
+
+                data = await resp.json()
+                return data["choices"][0]["message"]["content"]
+
+    except aiohttp.ClientError as e:
+        logging.error(f"❌ Ошибка сети при запросе к OpenRouter: {e}")
+        return None
+    except (KeyError, IndexError) as e:
+        logging.error(f"❌ Неожиданный формат ответа OpenRouter: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"❌ Неизвестная ошибка при запросе к LLM: {e}")
+        return None

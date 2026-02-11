@@ -12,6 +12,7 @@ from config import (
     ADMIN_ID,
     SURGE_WINDOW_SECONDS,
     SURGE_THRESHOLD,
+    SYSTEM_PROMPT,
 )
 from sheets import get_sheet
 from llm import ask_llm
@@ -155,10 +156,10 @@ async def cmd_ask(message: Message):
 
     await message.answer("🤔 Думаю...")
 
-    # Отправляем всю историю диалога
+    # Отправляем всю историю диалога с системным промптом
+    system_msg = {"role": "system", "content": SYSTEM_PROMPT}
     answer = await ask_llm(
-        messages=list(history),
-        system_prompt="Ты полезный ассистент. Отвечай кратко и по делу на русском языке.",
+        messages=[system_msg] + list(history),
     )
 
     if answer:

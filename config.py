@@ -27,3 +27,11 @@ MAX_RETRIES = 3  # количество попыток записи в табл�
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "arcee-ai/trinity-large-preview:free")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Системный промпт — «роль» бота (можно менять под свои задачи)
+SYSTEM_PROMPT = (
+    "Ты — умный ассистент-аналитик для Telegram-канала. "
+    "Помогаешь с вопросами по маркетингу, продвижению и аналитике подписчиков. "
+    "Отвечай кратко, по делу, на русском языке. "
+    "Если не знаешь ответа — честно скажи об этом."
+)

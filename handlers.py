@@ -14,6 +14,7 @@ from config import (
     SURGE_THRESHOLD,
     SYSTEM_PROMPT,
 )
+import config
 from sheets import get_sheet
 from llm import ask_llm
 import state
@@ -123,7 +124,8 @@ async def cmd_help(message: Message):
     text = (
         "📋 <b>Доступные команды</b>\n\n"
         "/stats — Текущая статистика подписчиков\n"
-        "/ask — Задать вопрос ИИ\n"
+        "/ask — Задать вопрос ИИ (помнит контекст)\n"
+        "/new — Новый диалог (очистить память ИИ)\n"
         "/help — Этот список команд\n\n"
         "<i>Бот автоматически отслеживает подписки и отписки, "
         "записывает данные в Google Таблицу и отправляет "
@@ -132,6 +134,18 @@ async def cmd_help(message: Message):
         f"за {SURGE_WINDOW_SECONDS // 60} мин</i>"
     )
     await message.answer(text, parse_mode="HTML")
+
+
+@router.message(Command("new"))
+async def cmd_new(message: Message):
+    """Очистить память диалога с ИИ."""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    user_id = message.from_user.id
+    if user_id in state.messages_history:
+        state.messages_history[user_id].clear()
+    await message.answer("🗑 Память очищена. Новый диалог начат!")
 
 
 @router.message(Command("ask"))

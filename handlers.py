@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -26,7 +27,7 @@ def _tz():
 
 # --- ЕЖЕДНЕВНАЯ СВОДКА ---
 async def send_daily_report(bot: Bot):
-    """Отправляет админу статистику за вчерашний день."""
+    """Отправляет админу статистику за вчерашний день и текущее утро."""
     if not ADMIN_ID:
         return
 
@@ -36,21 +37,25 @@ async def send_daily_report(bot: Bot):
         return
 
     try:
-        yesterday = (datetime.now(_tz()) - timedelta(days=1)).strftime("%d.%m.%Y")
+        now = datetime.now(_tz())
+        yesterday = (now - timedelta(days=1)).strftime("%d.%m.%Y")
+        today = now.strftime("%d.%m.%Y")
+        
         dates = await asyncio.to_thread(worksheet.col_values, 1)
 
         yesterday_count = dates.count(yesterday)
+        today_count = dates.count(today)
         total_count = max(0, len(dates) - 1)
 
         text = (
             f"📊 <b>Ежедневная сводка</b>\n\n"
-            f"📅 Дата: {yesterday}\n"
-            f"➕ Новых подписчиков: <b>{yesterday_count}</b>\n"
-            f"👥 Всего подписчиков: <b>{total_count}</b>"
+            f"🗓 <b>Вчера ({yesterday}):</b> {yesterday_count}\n"
+            f"🌤 <b>Сегодня ({today}):</b> {today_count}\n"
+            f"👥 <b>Всего:</b> {total_count}"
         )
 
         await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
-        logging.info(f"✅ Отправлена ежедневная сводка: {yesterday_count} подписчиков за {yesterday}")
+        logging.info(f"✅ Отправлена ежедневная сводка. Вчера: {yesterday_count}, Сегодня: {today_count}")
 
     except Exception as e:
         logging.error(f"Ошибка при формировании ежедневной сводки: {e}")
@@ -130,26 +135,40 @@ async def cmd_help(message: Message):
 
 @router.message(Command("ask"))
 async def cmd_ask(message: Message):
-    """Задать вопрос ИИ через OpenRouter."""
+    """Задать вопрос ИИ через OpenRouter с памятью контекста (10 сообщений)."""
     if message.from_user.id != ADMIN_ID:
         return
 
+    user_id = message.from_user.id
     question = message.text.replace("/ask", "", 1).strip()
+    
     if not question:
         await message.answer("✏️ Напиши вопрос после /ask\n\nПример: /ask Какая погода в Москве?")
         return
 
+    # Инициализация истории для пользователя
+    if user_id not in state.messages_history:
+        state.messages_history[user_id] = deque(maxlen=10)
+    
+    history = state.messages_history[user_id]
+    history.append({"role": "user", "content": question})
+
     await message.answer("🤔 Думаю...")
 
+    # Отправляем всю историю диалога
     answer = await ask_llm(
-        prompt=question,
+        messages=list(history),
         system_prompt="Ты полезный ассистент. Отвечай кратко и по делу на русском языке.",
     )
 
     if answer:
+        history.append({"role": "assistant", "content": answer})
         await message.answer(answer)
     else:
-        await message.answer("❌ Не удалось получить ответ от LLM")
+        # Если ошибка, удаляем последний вопрос из истории, чтобы не засорять
+        if history and history[-1]["role"] == "user":
+            history.pop()
+        await message.answer(f"❌ Не удалось получить ответ от LLM. Проверь баланс/ключ.\nМодель: {config.OPENROUTER_MODEL}")
 
 
 # --- СОБЫТИЯ ПОДПИСКИ / ОТПИСКИ ---

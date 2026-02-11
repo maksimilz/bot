@@ -22,19 +22,17 @@ from config import OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_BASE_URL
 
 
 async def ask_llm(
-    prompt: str,
-    system_prompt: str = "",
-    max_tokens: int = 1024,
+    messages: list[dict],
     temperature: float = 0.7,
+    max_tokens: int = 1024,
 ) -> str | None:
     """
     Отправляет запрос к OpenRouter API и возвращает текст ответа.
 
     Args:
-        prompt: Текст сообщения пользователя.
-        system_prompt: Системный промпт (необязательно).
-        max_tokens: Максимальное количество токенов в ответе.
+        messages: История сообщений [{"role": "user", "content": "..."}, ...]
         temperature: Температура генерации (0.0 — детерминированно, 1.0 — креативно).
+        max_tokens: Максимальное количество токенов в ответе.
 
     Returns:
         Текст ответа модели или None при ошибке.
@@ -42,11 +40,6 @@ async def ask_llm(
     if not OPENROUTER_API_KEY:
         logging.warning("⚠️ OPENROUTER_API_KEY не задан — LLM запрос пропущен")
         return None
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -14,4 +15,9 @@ if TYPE_CHECKING:
 sheet_queue: asyncio.Queue | None = None
 
 # Детектор всплесков подписок — создаётся в main()
+# Детектор всплесков подписок — создаётся в main()
 surge_detector: "SurgeDetector | None" = None
+
+# История сообщений для контекста LLM (user_id -> deque)
+# Храним последние 10 сообщений
+messages_history: dict[int, deque] = {}

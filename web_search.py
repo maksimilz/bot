@@ -10,27 +10,35 @@
 import asyncio
 import logging
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
-async def search_web(query: str, max_results: int = 5) -> list[dict]:
+async def search_web(query: str, max_results: int = 5, retries: int = 3) -> list[dict]:
     """Выполняет поиск в DuckDuckGo и возвращает результаты.
 
     Args:
         query: Поисковый запрос.
         max_results: Максимальное количество результатов.
+        retries: Количество попыток при неудаче.
 
     Returns:
         Список словарей с ключами: title, href, body.
     """
-    try:
-        results = await asyncio.to_thread(
-            lambda: list(DDGS().text(query, max_results=max_results))
-        )
-        return results
-    except Exception as e:
-        logging.error(f"❌ Ошибка поиска DuckDuckGo: {e}")
-        return []
+    for attempt in range(1, retries + 1):
+        try:
+            results = await asyncio.to_thread(
+                lambda: list(DDGS().text(query, max_results=max_results))
+            )
+            if results:
+                return results
+            logging.warning(f"⚠️ DuckDuckGo: пустой ответ (попытка {attempt}/{retries})")
+        except Exception as e:
+            logging.error(f"❌ Ошибка поиска DuckDuckGo (попытка {attempt}/{retries}): {e}")
+
+        if attempt < retries:
+            await asyncio.sleep(1.5)
+
+    return []
 
 
 def format_search_context(results: list[dict]) -> str:

@@ -18,6 +18,7 @@ from config import (
 import config
 from sheets import get_sheet
 from llm import ask_llm
+from web_search import search_web, format_search_context
 import state
 
 
@@ -158,6 +159,7 @@ async def cmd_help(message: Message):
         "📋 <b>Доступные команды</b>\n\n"
         "/stats — Текущая статистика подписчиков\n"
         "/ask — Задать вопрос ИИ (помнит контекст)\n"
+        "/search — Поиск в интернете через ИИ\n"
         "/new — Новый диалог (очистить память ИИ)\n"
         "/help — Этот список команд\n\n"
         "<i>Бот автоматически отслеживает подписки и отписки, "
@@ -219,6 +221,61 @@ async def cmd_ask(message: Message):
         if history and history[-1]["role"] == "user":
             history.pop()
         await message.answer(f"❌ Не удалось получить ответ от LLM. Проверь баланс/ключ.\nМодель: {config.OPENROUTER_MODEL}")
+
+
+@router.message(Command("search"))
+async def cmd_search(message: Message):
+    """Поиск в интернете через DuckDuckGo + ответ от LLM."""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    query = message.text.replace("/search", "", 1).strip()
+
+    if not query:
+        await message.answer(
+            "🔍 Напиши запрос после /search\n\n"
+            "Пример: /search последние новости Python"
+        )
+        return
+
+    await message.answer("🔍 Ищу в интернете...")
+
+    # Поиск в DuckDuckGo
+    results = await search_web(query, max_results=5)
+
+    if not results:
+        await message.answer("❌ Ничего не найдено. Попробуй другой запрос.")
+        return
+
+    # Формируем контекст для LLM
+    search_context = format_search_context(results)
+
+    system_msg = {
+        "role": "system",
+        "content": (
+            "Ты — полезный ассистент. Пользователь попросил найти информацию в интернете. "
+            "Ниже приведены результаты поиска. Дай краткий и полезный ответ на основе найденного. "
+            "Указывай источники (ссылки), если это уместно. Отвечай на русском языке."
+        ),
+    }
+    user_msg = {
+        "role": "user",
+        "content": f"Запрос: {query}\n\nРезультаты поиска:\n{search_context}",
+    }
+
+    answer = await ask_llm(messages=[system_msg, user_msg], max_tokens=1500)
+
+    if answer:
+        await message.answer(answer)
+    else:
+        # Если LLM не ответил, покажем сырые результаты
+        fallback = "🔍 <b>Результаты поиска:</b>\n\n"
+        for r in results[:3]:
+            title = r.get("title", "")
+            url = r.get("href", "")
+            snippet = r.get("body", "")
+            fallback += f"📌 <b>{title}</b>\n{snippet}\n{url}\n\n"
+        await message.answer(fallback, parse_mode="HTML")
 
 
 # --- СОБЫТИЯ ПОДПИСКИ / ОТПИСКИ ---

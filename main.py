@@ -14,11 +14,12 @@ from config import (
     SURGE_WINDOW_SECONDS,
     SURGE_THRESHOLD,
     SURGE_COOLDOWN_SECONDS,
+    PERIODIC_REPORT_HOURS,
 )
 import state
 from surge import SurgeDetector
 from sheets import get_sheet, process_sheet_queue
-from handlers import router, send_daily_report
+from handlers import router, send_daily_report, send_periodic_report
 from web_server import start_web_server
 
 
@@ -54,10 +55,16 @@ async def main():
         minute=DAILY_REPORT_MINUTE,
         args=[bot],
     )
+    scheduler.add_job(
+        send_periodic_report, 'interval',
+        hours=PERIODIC_REPORT_HOURS,
+        args=[bot],
+    )
     scheduler.start()
     logging.info(
         f"⏰ Планировщик запущен. Ежедневная сводка в "
-        f"{DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} МСК"
+        f"{DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} МСК, "
+        f"мини-сводка каждые {PERIODIC_REPORT_HOURS}ч"
     )
 
     # При старте проверим связь с таблицей

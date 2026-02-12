@@ -12,6 +12,7 @@ from config import (
     ADMIN_ID,
     SURGE_WINDOW_SECONDS,
     SURGE_THRESHOLD,
+    PERIODIC_REPORT_HOURS,
     SYSTEM_PROMPT,
 )
 import config
@@ -64,6 +65,38 @@ async def send_daily_report(bot: Bot):
         await bot.send_message(ADMIN_ID, f"❌ Ошибка при подсчете статистики: {e}")
 
 
+async def send_periodic_report(bot: Bot):
+    """Мини-сводка каждые N часов. Молчит, если событий не было."""
+    if not ADMIN_ID:
+        return
+
+    joins = state.periodic_joins
+    leaves = state.periodic_leaves
+
+    # Сбрасываем счётчики
+    state.periodic_joins = 0
+    state.periodic_leaves = 0
+
+    if joins == 0 and leaves == 0:
+        return  # Нет событий — молчим
+
+    net = joins - leaves
+    net_str = f"+{net}" if net >= 0 else str(net)
+
+    text = (
+        f"📊 <b>Сводка за {PERIODIC_REPORT_HOURS}ч</b>\n\n"
+        f"➕ Подписок: <b>{joins}</b>\n"
+        f"➖ Отписок: <b>{leaves}</b>\n"
+        f"📈 Чистый рост: <b>{net_str}</b>"
+    )
+
+    try:
+        await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        logging.info(f"📊 Периодическая сводка: +{joins} / -{leaves}")
+    except Exception as e:
+        logging.error(f"Ошибка отправки периодической сводки: {e}")
+
+
 # --- КОМАНДЫ ---
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, bot: Bot):
@@ -94,12 +127,12 @@ async def cmd_stats(message: Message, bot: Bot):
         # Текущий surge
         surge_info = ""
         if state.surge_detector:
-            _, surge_count = state.surge_detector.record_and_check()
-            # Убираем лишний тик — это запрос статистики, не подписка
-            state.surge_detector._timestamps.pop()
-            surge_count = len(state.surge_detector._timestamps)
-            if surge_count > 0:
-                surge_info = f"\n⚡ За последние {SURGE_WINDOW_SECONDS // 60} мин: <b>{surge_count}</b>"
+            joins_w, leaves_w = state.surge_detector.get_counts()
+            if joins_w > 0 or leaves_w > 0:
+                surge_info = (
+                    f"\n⚡ За последние {SURGE_WINDOW_SECONDS // 60} мин: "
+                    f"<b>+{joins_w} / -{leaves_w}</b>"
+                )
 
         text = (
             f"📊 <b>Текущая статистика</b>\n\n"
@@ -128,10 +161,12 @@ async def cmd_help(message: Message):
         "/new — Новый диалог (очистить память ИИ)\n"
         "/help — Этот список команд\n\n"
         "<i>Бот автоматически отслеживает подписки и отписки, "
-        "записывает данные в Google Таблицу и отправляет "
-        "ежедневную сводку.</i>\n\n"
-        f"⚡ <i>Surge-алерт: ≥{SURGE_THRESHOLD} подписчиков "
-        f"за {SURGE_WINDOW_SECONDS // 60} мин</i>"
+        "записывает данные в Google Таблицу.</i>\n\n"
+        "📬 <b>Уведомления:</b>\n"
+        f"⚡ Surge-алерт: ≥{SURGE_THRESHOLD} подписок "
+        f"за {SURGE_WINDOW_SECONDS // 60} мин\n"
+        f"📊 Мини-сводка: каждые {PERIODIC_REPORT_HOURS}ч\n"
+        "📅 Ежедневная сводка: 09:00 МСК"
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -200,48 +235,30 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
 
     logging.info(f"🔔 Новый подписчик: {full_name} ({user_id})")
 
-    # Добавляем в очередь
-    try:
-        q_size = state.sheet_queue.qsize()
-    except NotImplementedError:
-        q_size = 0
-
+    # Запись в Google Sheets
     await state.sheet_queue.put([date_str, time_str, user_id, full_name, username, "➕ Подписка"])
 
-    if q_size <= 5:
-        sheet_status = "✅ Записано"
-    else:
-        sheet_status = "⏳ Добавлено в очередь записи"
+    # Счётчик для периодической сводки
+    state.periodic_joins += 1
 
-    # Проверяем surge detection
-    surge_text = ""
+    # Surge detection — алерт только при всплеске
     if state.surge_detector:
-        is_surge, surge_count = state.surge_detector.record_and_check()
-        if is_surge:
-            surge_text = (
-                f"\n\n🚨 <b>ВСПЛЕСК ПОДПИСОК!</b>\n"
-                f"⚡ {surge_count} подписчиков за последние "
-                f"{SURGE_WINDOW_SECONDS // 60} мин!"
+        is_surge, joins_w, leaves_w = state.surge_detector.record_join()
+        if is_surge and ADMIN_ID:
+            text = (
+                f"🚨 <b>ВСПЛЕСК ПОДПИСОК!</b>\n"
+                f"⚡ +{joins_w} подписок / -{leaves_w} отписок "
+                f"за последние {SURGE_WINDOW_SECONDS // 60} мин!"
             )
-
-    if ADMIN_ID:
-        text = (
-            f"🔔 <b>Новый подписчик!</b>\n"
-            f"👤 {full_name} ({username})\n"
-            f"🆔 <code>{user_id}</code>\n"
-            f"📅 {date_str} {time_str}\n"
-            f"<i>{sheet_status}</i>"
-            f"{surge_text}"
-        )
-        try:
-            await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
-        except Exception as e:
-            logging.error(f"Не удалось отправить ЛС админу: {e}")
+            try:
+                await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+            except Exception as e:
+                logging.error(f"Не удалось отправить surge-алерт: {e}")
 
 
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_MEMBER >> IS_NOT_MEMBER))
 async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
-    """Обработка отписки пользователя."""
+    """Обработка отписки пользователя (тихая запись)."""
     user = event.old_chat_member.user
     now = datetime.now(_tz())
 
@@ -253,16 +270,12 @@ async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
 
     logging.info(f"👋 Отписка: {full_name} ({user_id})")
 
+    # Запись в Google Sheets
     await state.sheet_queue.put([date_str, time_str, user_id, full_name, username, "❌ Отписка"])
 
-    if ADMIN_ID:
-        text = (
-            f"👋 <b>Отписка</b>\n"
-            f"👤 {full_name} ({username})\n"
-            f"🆔 <code>{user_id}</code>\n"
-            f"📅 {date_str} {time_str}"
-        )
-        try:
-            await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
-        except Exception as e:
-            logging.error(f"Не удалось отправить ЛС админу об отписке: {e}")
+    # Счётчик для периодической сводки
+    state.periodic_leaves += 1
+
+    # Учёт в surge detector (не триггерит алерт)
+    if state.surge_detector:
+        state.surge_detector.record_leave()

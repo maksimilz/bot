@@ -4,15 +4,15 @@
 Использование:
     from llm import ask_llm
 
-    answer = await ask_llm("Привет, как дела?")
-    answer = await ask_llm(
-        prompt="Объясни кратко что такое Python",
-        system_prompt="Ты дружелюбный помощник. Отвечай кратко."
-    )
+    messages = [
+        {"role": "system", "content": "Ты полезный ассистент."},
+        {"role": "user", "content": "Привет!"},
+    ]
+    answer = await ask_llm(messages)
 
 Перед использованием задай переменные окружения:
     OPENROUTER_API_KEY  — API-ключ OpenRouter (обязательно)
-    OPENROUTER_MODEL    — модель (по умолчанию openai/gpt-3.5-turbo)
+    OPENROUTER_MODEL    — модель (по умолчанию arcee-ai/trinity-large-preview:free)
 """
 import logging
 

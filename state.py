@@ -15,8 +15,11 @@ if TYPE_CHECKING:
 sheet_queue: asyncio.Queue | None = None
 
 # Детектор всплесков подписок — создаётся в main()
-# Детектор всплесков подписок — создаётся в main()
 surge_detector: "SurgeDetector | None" = None
+
+# Счётчики для периодической мини-сводки (сбрасываются после отправки)
+periodic_joins: int = 0
+periodic_leaves: int = 0
 
 # История сообщений для контекста LLM (user_id -> deque)
 # Храним последние 10 сообщений

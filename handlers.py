@@ -45,17 +45,27 @@ async def send_daily_report(bot: Bot):
         yesterday = (now - timedelta(days=1)).strftime("%d.%m.%Y")
         today = now.strftime("%d.%m.%Y")
         
-        dates = await asyncio.to_thread(worksheet.col_values, 1)
+        all_rows = await asyncio.to_thread(worksheet.get_all_values)
+        data_rows = all_rows[1:]  # Пропускаем заголовок
 
-        yesterday_count = dates.count(yesterday)
-        today_count = dates.count(today)
-        total_count = max(0, len(dates) - 1)
+        y_joins = sum(1 for r in data_rows if r[0] == yesterday and len(r) >= 6 and "Подписка" in r[5])
+        y_leaves = sum(1 for r in data_rows if r[0] == yesterday and len(r) >= 6 and "Отписка" in r[5])
+        t_joins = sum(1 for r in data_rows if r[0] == today and len(r) >= 6 and "Подписка" in r[5])
+        t_leaves = sum(1 for r in data_rows if r[0] == today and len(r) >= 6 and "Отписка" in r[5])
+        total_count = len(data_rows)
+
+        y_net = y_joins - y_leaves
+        y_net_str = f"+{y_net}" if y_net >= 0 else str(y_net)
+        t_net = t_joins - t_leaves
+        t_net_str = f"+{t_net}" if t_net >= 0 else str(t_net)
 
         text = (
             f"📊 <b>Ежедневная сводка</b>\n\n"
-            f"🗓 <b>Вчера ({yesterday}):</b> {yesterday_count}\n"
-            f"🌤 <b>Сегодня ({today}):</b> {today_count}\n"
-            f"👥 <b>Всего:</b> {total_count}"
+            f"🗓 <b>Вчера ({yesterday}):</b>\n"
+            f"   ➕ {y_joins}  ➖ {y_leaves}  (итого {y_net_str})\n\n"
+            f"🌤 <b>Сегодня ({today}):</b>\n"
+            f"   ➕ {t_joins}  ➖ {t_leaves}  (итого {t_net_str})\n\n"
+            f"👥 <b>Всего записей:</b> {total_count}"
         )
 
         await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
@@ -119,11 +129,15 @@ async def cmd_stats(message: Message, bot: Bot):
         return
 
     try:
-        dates = await asyncio.to_thread(worksheet.col_values, 1)
+        all_rows = await asyncio.to_thread(worksheet.get_all_values)
+        data_rows = all_rows[1:]  # Пропускаем заголовок
 
         today = datetime.now(_tz()).strftime("%d.%m.%Y")
-        today_count = dates.count(today)
-        total_count = max(0, len(dates) - 1)
+        today_joins = sum(1 for r in data_rows if r[0] == today and len(r) >= 6 and "Подписка" in r[5])
+        today_leaves = sum(1 for r in data_rows if r[0] == today and len(r) >= 6 and "Отписка" in r[5])
+        total_count = len(data_rows)
+        net = today_joins - today_leaves
+        net_str = f"+{net}" if net >= 0 else str(net)
 
         # Текущий surge
         surge_info = ""
@@ -138,8 +152,10 @@ async def cmd_stats(message: Message, bot: Bot):
         text = (
             f"📊 <b>Текущая статистика</b>\n\n"
             f"📅 Сегодня: {today}\n"
-            f"➕ Новых сегодня: <b>{today_count}</b>\n"
-            f"👥 Всего подписчиков: <b>{total_count}</b>"
+            f"➕ Подписок: <b>{today_joins}</b>\n"
+            f"➖ Отписок: <b>{today_leaves}</b>\n"
+            f"📈 Чистый рост: <b>{net_str}</b>\n"
+            f"👥 Всего записей: <b>{total_count}</b>"
             f"{surge_info}"
         )
         await message.answer(text, parse_mode="HTML")

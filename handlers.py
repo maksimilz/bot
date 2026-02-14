@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Router
-from aiogram.filters import ChatMemberUpdatedFilter, Command, IS_NOT_MEMBER, IS_MEMBER, MEMBER
+from aiogram.filters import ChatMemberUpdatedFilter, Command, IS_NOT_MEMBER, IS_MEMBER, MEMBER, KICKED
 from aiogram.types import ChatMemberUpdated, Message
 
 from config import (
@@ -69,7 +69,7 @@ async def send_daily_report(bot: Bot):
         )
 
         await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
-        logging.info(f"✅ Отправлена ежедневная сводка. Вчера: {yesterday_count}, Сегодня: {today_count}")
+        logging.info(f"✅ Отправлена ежедневная сводка. Вчера: {y_net_str}, Сегодня: {t_net_str}")
 
     except Exception as e:
         logging.error(f"Ошибка при формировании ежедневной сводки: {e}")
@@ -329,10 +329,13 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
                 logging.error(f"Не удалось отправить surge-алерт: {e}")
 
 
-@router.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_MEMBER >> IS_NOT_MEMBER))
+@router.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_MEMBER >> (IS_NOT_MEMBER | KICKED)))
 async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
-    """Обработка отписки пользователя (тихая запись)."""
+    """Обработка отписки пользователя (в т.ч. кик)."""
     user = event.old_chat_member.user
+    # New status
+    new_status = event.new_chat_member.status
+    
     now = datetime.now(_tz())
 
     date_str = now.strftime("%d.%m.%Y")
@@ -341,10 +344,15 @@ async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
     username = f"@{user.username}" if user.username else ""
     user_id = str(user.id)
 
-    logging.info(f"👋 Отписка: {full_name} ({user_id})")
+    if new_status == KICKED:
+        action = "❌ Отписка (кик)"
+        logging.info(f"🚫 User kicked/banned: {full_name} ({user_id})")
+    else:
+        action = "❌ Отписка"
+        logging.info(f"👋 User left: {full_name} ({user_id})")
 
     # Запись в Google Sheets
-    await state.sheet_queue.put([date_str, time_str, user_id, full_name, username, "❌ Отписка"])
+    await state.sheet_queue.put([date_str, time_str, user_id, full_name, username, action])
 
     # Счётчик для периодической сводки
     state.periodic_leaves += 1

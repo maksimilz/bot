@@ -81,12 +81,9 @@ async def send_periodic_report(bot: Bot):
     if not ADMIN_ID:
         return
 
-    joins = state.periodic_joins
-    leaves = state.periodic_leaves
-
-    # Сбрасываем счётчики
-    state.periodic_joins = 0
-    state.periodic_leaves = 0
+    # Атомарно читаем и сбрасываем счётчики
+    joins = state.periodic_joins.reset()
+    leaves = state.periodic_leaves.reset()
 
     if joins == 0 and leaves == 0:
         return  # Нет событий — молчим
@@ -312,7 +309,7 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     await state.sheet_queue.put([date_str, time_str, user_id, full_name, username, "➕ Подписка"])
 
     # Счётчик для периодической сводки
-    state.periodic_joins += 1
+    state.periodic_joins.increment()
 
     # Surge detection — алерт только при всплеске
     if state.surge_detector:
@@ -355,7 +352,7 @@ async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
     await state.sheet_queue.put([date_str, time_str, user_id, full_name, username, action])
 
     # Счётчик для периодической сводки
-    state.periodic_leaves += 1
+    state.periodic_leaves.increment()
 
     # Учёт в surge detector (не триггерит алерт)
     if state.surge_detector:

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import signal
 import sys
 from zoneinfo import ZoneInfo
 
@@ -83,8 +84,8 @@ async def main():
         update_interval=SURGE_UPDATE_INTERVAL,
     )
 
-    # Запускаем обработчик очереди в фоне
-    asyncio.create_task(process_sheet_queue(state.sheet_queue))
+    # Запускаем обработчик очереди в фоне (сохраняем ссылку!)
+    queue_worker = asyncio.create_task(process_sheet_queue(state.sheet_queue))
 
     # Настраиваем планировщик для ежедневной сводки
     scheduler = AsyncIOScheduler(timezone=str(_tz()))
@@ -112,6 +113,55 @@ async def main():
         f"мини-сводка каждые {PERIODIC_REPORT_HOURS}ч"
     )
 
+    # --- Graceful shutdown ---
+    shutdown_event = asyncio.Event()
+
+    async def graceful_shutdown():
+        """Корректное завершение: дренаж очереди, остановка планировщика."""
+        logging.info("🛑 Получен сигнал завершения, начинаем graceful shutdown...")
+
+        # 1. Останавливаем планировщик (не запускаем новые задачи)
+        scheduler.shutdown(wait=False)
+        logging.info("  ⏹ Планировщик остановлен")
+
+        # 2. Отправляем sentinel в очередь — worker допишет оставшееся и выйдет
+        if state.sheet_queue:
+            await state.sheet_queue.put(None)
+            try:
+                await asyncio.wait_for(queue_worker, timeout=15)
+                logging.info("  ✅ Worker очереди завершён")
+            except asyncio.TimeoutError:
+                logging.warning("  ⚠️ Worker не завершился за 15 сек, принудительная отмена")
+                queue_worker.cancel()
+
+        # 3. Уведомляем админа (если возможно)
+        if ADMIN_ID:
+            try:
+                await bot.send_message(ADMIN_ID, "🛑 Бот остановлен (graceful shutdown)")
+            except Exception:
+                pass
+
+        # 4. Закрываем сессию бота
+        await bot.session.close()
+
+        shutdown_event.set()
+        logging.info("✅ Graceful shutdown завершён")
+
+    def _signal_handler():
+        asyncio.ensure_future(graceful_shutdown())
+
+    # Регистрируем обработчики сигналов (кроссплатформенно)
+    loop = asyncio.get_running_loop()
+    if sys.platform != "win32":
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, _signal_handler)
+    else:
+        # На Windows используем signal.signal (менее надёжно, но работает)
+        def _win_handler(signum, frame):
+            loop.call_soon_threadsafe(_signal_handler)
+        signal.signal(signal.SIGTERM, _win_handler)
+        signal.signal(signal.SIGINT, _win_handler)
+
     # При старте проверим связь с таблицей
     if ADMIN_ID:
         try:
@@ -121,7 +171,8 @@ async def main():
                     ADMIN_ID,
                     "🤖 Бот перезапущен. 🟢 Связь с Google Таблицей: ОК\n"
                     "⏰ Ежедневные сводки активированы\n"
-                    "📦 Пакетная запись включена",
+                    "📦 Пакетная запись включена\n"
+                    "🛡 Graceful shutdown активен",
                 )
             else:
                 await bot.send_message(
@@ -140,3 +191,4 @@ async def main():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     asyncio.run(main())
+

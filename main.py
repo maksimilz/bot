@@ -14,10 +14,12 @@ from config import (
     SURGE_WINDOW_SECONDS,
     SURGE_THRESHOLD,
     SURGE_COOLDOWN_SECONDS,
+    SURGE_QUIET_PERIOD,
+    SURGE_UPDATE_INTERVAL,
     PERIODIC_REPORT_HOURS,
 )
 import state
-from surge import SurgeDetector
+from surge import SurgeDetector, WaveAction
 from sheets import get_sheet, process_sheet_queue
 from handlers import router, send_daily_report, send_periodic_report
 from web_server import start_web_server
@@ -25,6 +27,42 @@ from web_server import start_web_server
 
 def _tz():
     return ZoneInfo("Europe/Moscow")
+
+
+async def check_wave_status(bot: Bot):
+    """Периодическая проверка: не завершилась ли волна подписок."""
+    if not state.surge_detector or not ADMIN_ID:
+        return
+
+    action, wave_info = state.surge_detector.check_wave()
+
+    if action == WaveAction.NONE or wave_info is None:
+        return
+
+    if action == WaveAction.SEND_SUMMARY:
+        net_str = f"+{wave_info.net}" if wave_info.net >= 0 else str(wave_info.net)
+        text = (
+            f"📊 <b>Волна завершена!</b>\n"
+            f"⚡ Итого: <b>+{wave_info.joins}</b> подписок / "
+            f"<b>-{wave_info.leaves}</b> отписок\n"
+            f"⏱ Длительность: <b>{wave_info.duration_minutes} мин</b>\n"
+            f"📈 Чистый прирост: <b>{net_str}</b>"
+        )
+    elif action == WaveAction.SEND_UPDATE:
+        text = (
+            f"🔥 <b>Волна продолжается!</b>\n"
+            f"⚡ Уже <b>+{wave_info.joins}</b> подписок / "
+            f"<b>-{wave_info.leaves}</b> отписок\n"
+            f"⏱ Идёт <b>{wave_info.duration_minutes} мин</b>..."
+        )
+    else:
+        return
+
+    try:
+        await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        logging.info(f"📊 Wave alert ({action.value}): +{wave_info.joins}/-{wave_info.leaves}")
+    except Exception as e:
+        logging.error(f"Ошибка отправки wave-алерта: {e}")
 
 
 async def main():
@@ -41,6 +79,8 @@ async def main():
         window_seconds=SURGE_WINDOW_SECONDS,
         threshold=SURGE_THRESHOLD,
         cooldown_seconds=SURGE_COOLDOWN_SECONDS,
+        quiet_period=SURGE_QUIET_PERIOD,
+        update_interval=SURGE_UPDATE_INTERVAL,
     )
 
     # Запускаем обработчик очереди в фоне
@@ -58,6 +98,11 @@ async def main():
     scheduler.add_job(
         send_periodic_report, 'interval',
         hours=PERIODIC_REPORT_HOURS,
+        args=[bot],
+    )
+    scheduler.add_job(
+        check_wave_status, 'interval',
+        seconds=30,
         args=[bot],
     )
     scheduler.start()

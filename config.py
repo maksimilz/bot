@@ -19,6 +19,8 @@ DAILY_REPORT_MINUTE = 0
 SURGE_WINDOW_SECONDS = 300    # 5 минут
 SURGE_THRESHOLD = 10          # порог подписчиков
 SURGE_COOLDOWN_SECONDS = 300  # не спамить алертами чаще чем раз в 5 мин
+SURGE_QUIET_PERIOD = 120      # 2 мин тишины → волна завершена
+SURGE_UPDATE_INTERVAL = 300   # промежуточные обновления каждые 5 мин
 
 # --- ПЕРИОДИЧЕСКАЯ МИНИ-СВОДКА ---
 PERIODIC_REPORT_HOURS = 3  # интервал мини-сводки в часах

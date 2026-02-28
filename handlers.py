@@ -68,7 +68,7 @@ async def send_daily_report(bot: Bot):
             f"👥 <b>Всего записей:</b> {total_count}"
         )
 
-        await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        await bot.send_message(ADMIN_ID, text, parse_mode="HTML", disable_notification=True)
         logging.info(f"✅ Отправлена ежедневная сводка. Вчера: {y_net_str}, Сегодня: {t_net_str}")
 
     except Exception as e:
@@ -99,7 +99,7 @@ async def send_periodic_report(bot: Bot):
     )
 
     try:
-        await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        await bot.send_message(ADMIN_ID, text, parse_mode="HTML", disable_notification=True)
         logging.info(f"📊 Периодическая сводка: +{joins} / -{leaves}")
     except Exception as e:
         logging.error(f"Ошибка отправки периодической сводки: {e}")

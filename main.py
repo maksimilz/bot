@@ -60,7 +60,7 @@ async def check_wave_status(bot: Bot):
         return
 
     try:
-        await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        await bot.send_message(ADMIN_ID, text, parse_mode="HTML", disable_notification=True)
         logging.info(f"📊 Wave alert ({action.value}): +{wave_info.joins}/-{wave_info.leaves}")
     except Exception as e:
         logging.error(f"Ошибка отправки wave-алерта: {e}")
@@ -137,7 +137,7 @@ async def main():
         # 3. Уведомляем админа (если возможно)
         if ADMIN_ID:
             try:
-                await bot.send_message(ADMIN_ID, "🛑 Бот остановлен (graceful shutdown)")
+                await bot.send_message(ADMIN_ID, "🛑 Бот остановлен (graceful shutdown)", disable_notification=True)
             except Exception:
                 pass
 
@@ -173,11 +173,13 @@ async def main():
                     "⏰ Ежедневные сводки активированы\n"
                     "📦 Пакетная запись включена\n"
                     "🛡 Graceful shutdown активен",
+                    disable_notification=True,
                 )
             else:
                 await bot.send_message(
                     ADMIN_ID,
                     "🤖 Бот перезапущен. 🔴 ОШИБКА доступа к Таблице (см. логи)",
+                    disable_notification=True,
                 )
         except Exception as e:
             logging.error(f"Ошибка старта: {e}")

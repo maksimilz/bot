@@ -24,7 +24,15 @@ async def check_rss_feed(bot: Bot):
         return
 
     try:
-        async with aiohttp.ClientSession() as session:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(RSS_FEED_URL, timeout=10) as response:
                 if response.status != 200:
                     logging.error(f"RSS Fetch Error: {response.status}")

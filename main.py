@@ -18,11 +18,13 @@ from config import (
     SURGE_QUIET_PERIOD,
     SURGE_UPDATE_INTERVAL,
     PERIODIC_REPORT_HOURS,
+    RSS_CHECK_INTERVAL_MINUTES,
 )
 import state
 from surge import SurgeDetector, WaveAction
 from sheets import get_sheet, process_sheet_queue
 from handlers import router, send_daily_report, send_periodic_report
+from rss_checker import check_rss_feed
 from web_server import start_web_server
 
 
@@ -104,6 +106,11 @@ async def main():
     scheduler.add_job(
         check_wave_status, 'interval',
         seconds=30,
+        args=[bot],
+    )
+    scheduler.add_job(
+        check_rss_feed, 'interval',
+        minutes=RSS_CHECK_INTERVAL_MINUTES,
         args=[bot],
     )
     scheduler.start()

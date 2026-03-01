@@ -25,6 +25,10 @@ SURGE_UPDATE_INTERVAL = 300   # промежуточные обновления 
 # --- ПЕРИОДИЧЕСКАЯ МИНИ-СВОДКА ---
 PERIODIC_REPORT_HOURS = 3  # интервал мини-сводки в часах
 
+# --- RSS MONITORING ---
+RSS_FEED_URL = "https://77.rospotrebnadzor.ru/index.php?format=feed&type=rss"
+RSS_CHECK_INTERVAL_MINUTES = 10
+
 # --- ОЧЕРЕДЬ ---
 MAX_RETRIES = 3  # количество попыток записи в таблицу
 

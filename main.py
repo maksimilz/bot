@@ -137,7 +137,11 @@ async def main():
         # 3. Уведомляем админа
         if ADMIN_ID:
             try:
-                await bot.send_message(ADMIN_ID, "🛑 Бот остановлен (graceful shutdown)", disable_notification=True)
+                await bot.send_message(
+                    ADMIN_ID,
+                    "🔄 Старая версия бота отключена (graceful shutdown при обновлении)",
+                    disable_notification=True
+                )
             except Exception:
                 pass
 

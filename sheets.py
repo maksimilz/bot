@@ -35,17 +35,16 @@ def _get_client():
 def _calc_seed_from_old_sheet(spreadsheet) -> int:
     """Считает начальный total из старого листа событий (joins - leaves)."""
     try:
-        old_ws = spreadsheet.worksheet(OLD_SHEET_NAME)
+        old_ws = spreadsheet.sheet1
         rows = old_ws.get_all_values()
+        if not rows:
+            return 0
         data = rows[1:]  # пропускаем заголовок
         joins = sum(1 for r in data if len(r) >= 6 and "Подписка" in r[5])
         leaves = sum(1 for r in data if len(r) >= 6 and "Отписка" in r[5])
         seed = joins - leaves
         logging.info(f"📊 Seed из старого листа: {joins} подписок - {leaves} отписок = {seed}")
         return seed
-    except gspread.exceptions.WorksheetNotFound:
-        logging.info("Старый лист не найден, seed = 0")
-        return 0
     except Exception as e:
         logging.warning(f"Не удалось посчитать seed: {e}")
         return 0
@@ -79,6 +78,15 @@ def get_stats_sheet(force_refresh=False):
     try:
         ws = sh.worksheet(STATS_SHEET_NAME)
         logging.info(f"✅ Лист '{STATS_SHEET_NAME}' найден")
+        
+        # Если лист пустой (только заголовок), добавим seed-строку
+        rows = ws.get_all_values()
+        if len(rows) <= 1:
+            seed = _calc_seed_from_old_sheet(sh)
+            if seed > 0:
+                ws.append_row(["(архив до перехода)", 0, 0, 0, seed])
+                logging.info(f"✅ Добавлена seed-строка в пустой лист: {seed}")
+                
     except gspread.exceptions.WorksheetNotFound:
         logging.info(f"📋 Создаём лист '{STATS_SHEET_NAME}'...")
         ws = sh.add_worksheet(title=STATS_SHEET_NAME, rows=1000, cols=5)

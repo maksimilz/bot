@@ -127,11 +127,15 @@ async def main():
         """Корректное завершение: дренаж очереди, остановка планировщика."""
         logging.info("🛑 Получен сигнал завершения, начинаем graceful shutdown...")
 
-        # 1. Останавливаем планировщик (не запускаем новые задачи)
+        # 1. Останавливаем polling (убираем конфликт с новым инстансом)
+        await dp.stop_polling()
+        logging.info("  ⏹ Polling остановлен")
+
+        # 2. Останавливаем планировщик (не запускаем новые задачи)
         scheduler.shutdown(wait=False)
         logging.info("  ⏹ Планировщик остановлен")
 
-        # 2. Отправляем sentinel в очередь — worker допишет оставшееся и выйдет
+        # 3. Отправляем sentinel в очередь — worker допишет оставшееся и выйдет
         if state.sheet_queue:
             await state.sheet_queue.put(None)
             try:
@@ -141,14 +145,14 @@ async def main():
                 logging.warning("  ⚠️ Worker не завершился за 15 сек, принудительная отмена")
                 queue_worker.cancel()
 
-        # 3. Уведомляем админа (если возможно)
+        # 4. Уведомляем админа (если возможно)
         if ADMIN_ID:
             try:
                 await bot.send_message(ADMIN_ID, "🛑 Бот остановлен (graceful shutdown)", disable_notification=True)
             except Exception:
                 pass
 
-        # 4. Закрываем сессию бота
+        # 5. Закрываем сессию бота
         await bot.session.close()
 
         shutdown_event.set()
@@ -191,9 +195,12 @@ async def main():
         except Exception as e:
             logging.error(f"Ошибка старта: {e}")
 
+    # Сбрасываем вебхук/старые соединения при старте (устраняет TelegramConflictError)
+    await bot.delete_webhook(drop_pending_updates=False)
+
     await asyncio.gather(
         start_web_server(),
-        dp.start_polling(bot),
+        dp.start_polling(bot, handle_signals=False),
     )
 
 

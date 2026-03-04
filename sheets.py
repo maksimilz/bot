@@ -2,195 +2,208 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
 
 import gspread
 
-from config import SHEET_NAME, MAX_RETRIES
+from config import MAX_RETRIES
 
-# Глобальный кэш для таблицы
-_SHEET_CACHE = None
+STATS_SHEET_NAME = "Статистика"
+OLD_SHEET_NAME = "График подписчиков"
+HEADER = ["Дата", "Подписки", "Отписки", "Чистый прирост", "Всего (накопленно)"]
 
-# Файл для сохранения неудачных записей (dead-letter queue)
-DEAD_LETTER_FILE = Path(__file__).parent / "failed_rows.jsonl"
+_gc_cache = None       # gspread client
+_stats_sheet = None    # лист «Статистика»
+
+
+def _get_client():
+    global _gc_cache
+    if _gc_cache:
+        return _gc_cache
+    creds_json = os.environ.get("G_SHEETS_KEY")
+    if not creds_json:
+        logging.error("❌ Нет ключа G_SHEETS_KEY в переменных окружения")
+        return None
+    try:
+        creds_dict = json.loads(creds_json)
+        _gc_cache = gspread.service_account_from_dict(creds_dict)
+        return _gc_cache
+    except Exception as e:
+        logging.error(f"❌ Ошибка авторизации Google: {e}")
+        return None
+
+
+def _calc_seed_from_old_sheet(spreadsheet) -> int:
+    """Считает начальный total из старого листа событий (joins - leaves)."""
+    try:
+        old_ws = spreadsheet.worksheet(OLD_SHEET_NAME)
+        rows = old_ws.get_all_values()
+        data = rows[1:]  # пропускаем заголовок
+        joins = sum(1 for r in data if len(r) >= 6 and "Подписка" in r[5])
+        leaves = sum(1 for r in data if len(r) >= 6 and "Отписка" in r[5])
+        seed = joins - leaves
+        logging.info(f"📊 Seed из старого листа: {joins} подписок - {leaves} отписок = {seed}")
+        return seed
+    except gspread.exceptions.WorksheetNotFound:
+        logging.info("Старый лист не найден, seed = 0")
+        return 0
+    except Exception as e:
+        logging.warning(f"Не удалось посчитать seed: {e}")
+        return 0
 
 
 def get_sheet(force_refresh=False):
-    """Подключение к Google Таблице с кэшированием."""
-    global _SHEET_CACHE
-    if _SHEET_CACHE and not force_refresh:
-        return _SHEET_CACHE
+    """Совместимость со старым кодом — возвращает лист «Статистика»."""
+    return get_stats_sheet(force_refresh)
 
-    creds_json = os.environ.get("G_SHEETS_KEY")
-    if not creds_json:
-        logging.error("❌ ОШИБКА: Нет ключа G_SHEETS_KEY в переменных окружения")
+
+def get_stats_sheet(force_refresh=False):
+    """Возвращает лист «Статистика», создаёт если не существует."""
+    global _stats_sheet
+    if _stats_sheet and not force_refresh:
+        return _stats_sheet
+
+    gc = _get_client()
+    if not gc:
         return None
 
     try:
-        creds_dict = json.loads(creds_json)
-        gc = gspread.service_account_from_dict(creds_dict)
-        sh = gc.open(SHEET_NAME)
-        _SHEET_CACHE = sh.sheet1
-        logging.info("✅ Подключение к Google Таблице обновлено")
-        return _SHEET_CACHE
+        sh = gc.open(OLD_SHEET_NAME)
+    except gspread.exceptions.SpreadsheetNotFound:
+        logging.error(f"❌ Таблица '{OLD_SHEET_NAME}' не найдена")
+        return None
     except Exception as e:
-        logging.error(f"❌ Ошибка подключения к Google Таблице: {e}")
-        _SHEET_CACHE = None
+        logging.error(f"❌ Ошибка открытия таблицы: {e}")
         return None
 
-
-# --- Dead-letter queue ---
-
-def _save_to_dead_letter(rows: list[list]) -> None:
-    """Сохраняет неудачные строки в JSONL-файл (append)."""
+    # Создаём лист «Статистика» если не существует
     try:
-        with open(DEAD_LETTER_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rows, ensure_ascii=False) + "\n")
-        logging.warning(
-            f"💾 Сохранено {len(rows)} строк в dead-letter: {DEAD_LETTER_FILE}"
-        )
-    except Exception as e:
-        logging.critical(
-            f"🔴 НЕ УДАЛОСЬ СОХРАНИТЬ в dead-letter! Данные потеряны: {e}\n"
-            f"Строки: {rows}"
-        )
+        ws = sh.worksheet(STATS_SHEET_NAME)
+        logging.info(f"✅ Лист '{STATS_SHEET_NAME}' найден")
+    except gspread.exceptions.WorksheetNotFound:
+        logging.info(f"📋 Создаём лист '{STATS_SHEET_NAME}'...")
+        ws = sh.add_worksheet(title=STATS_SHEET_NAME, rows=1000, cols=5)
+        ws.append_row(HEADER)
+        # Записываем seed-строку (итог из старых данных, без даты — только total)
+        seed = _calc_seed_from_old_sheet(sh)
+        if seed > 0:
+            ws.append_row(["(архив до перехода)", 0, 0, 0, seed])
+        logging.info(f"✅ Лист '{STATS_SHEET_NAME}' создан, seed = {seed}")
+
+    _stats_sheet = ws
+    return ws
 
 
-async def _replay_dead_letter() -> None:
-    """Переотправляет сохранённые строки из dead-letter файла при старте."""
-    if not DEAD_LETTER_FILE.exists():
-        return
-
-    logging.info("📂 Найден dead-letter файл, пытаемся переотправить...")
-    batches: list[list[list]] = []
-
+async def get_last_total() -> int:
+    """Читает последнее значение 'Всего (накопленно)' из таблицы."""
+    ws = await asyncio.to_thread(get_stats_sheet)
+    if not ws:
+        return 0
     try:
-        with open(DEAD_LETTER_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    batches.append(json.loads(line))
+        all_rows = await asyncio.to_thread(ws.get_all_values)
+        data = all_rows[1:]  # пропускаем заголовок
+        for row in reversed(data):
+            if len(row) >= 5 and row[4]:
+                try:
+                    return int(str(row[4]).replace(" ", "").replace(",", ""))
+                except ValueError:
+                    continue
+        return 0
     except Exception as e:
-        logging.error(f"❌ Ошибка чтения dead-letter файла: {e}")
-        return
-
-    if not batches:
-        DEAD_LETTER_FILE.unlink(missing_ok=True)
-        return
-
-    worksheet = get_sheet(force_refresh=True)
-    if not worksheet:
-        logging.error("❌ Таблица недоступна, dead-letter остаётся на диске")
-        return
-
-    failed_batches: list[list[list]] = []
-    replayed = 0
-
-    for batch in batches:
-        try:
-            await asyncio.to_thread(worksheet.append_rows, batch)
-            replayed += len(batch)
-        except Exception as e:
-            logging.error(f"❌ Не удалось переотправить пачку ({len(batch)} строк): {e}")
-            failed_batches.append(batch)
-
-    # Перезаписываем файл: только то, что не удалось
-    if failed_batches:
-        with open(DEAD_LETTER_FILE, "w", encoding="utf-8") as f:
-            for batch in failed_batches:
-                f.write(json.dumps(batch, ensure_ascii=False) + "\n")
-        logging.warning(
-            f"⚠️ Переотправлено {replayed} строк, "
-            f"осталось {sum(len(b) for b in failed_batches)} в dead-letter"
-        )
-    else:
-        DEAD_LETTER_FILE.unlink(missing_ok=True)
-        logging.info(f"✅ Все {replayed} строк из dead-letter успешно переотправлены")
+        logging.error(f"Ошибка чтения total: {e}")
+        return 0
 
 
-# --- Основной worker ---
-
-async def process_sheet_queue(sheet_queue: asyncio.Queue):
-    """Фоновая задача для пакетной записи в таблицу с ретраями.
-
-    Поддерживает graceful shutdown: при получении None (sentinel)
-    дописывает остаток очереди и завершается.
+async def write_daily_row(date_str: str, joins: int, leaves: int) -> bool:
     """
-    global _SHEET_CACHE
-
-    # При старте пробуем переотправить dead-letter
-    await _replay_dead_letter()
-
-    while True:
-        rows_to_write: list[list] = []
-        try:
-            # Ждем первую запись
-            first_item = await sheet_queue.get()
-
-            # Sentinel — сигнал завершения
-            if first_item is None:
-                # Дренажируем оставшееся в очереди
-                while not sheet_queue.empty():
-                    item = sheet_queue.get_nowait()
-                    if item is not None:
-                        rows_to_write.append(item)
-                if rows_to_write:
-                    await _write_rows(rows_to_write)
-                logging.info("🛑 Worker очереди завершён (graceful shutdown)")
-                return
-
-            rows_to_write.append(first_item)
-
-            # Собираем остальные доступные записи в течение короткого времени
-            try:
-                while len(rows_to_write) < 50:
-                    item = await asyncio.wait_for(sheet_queue.get(), timeout=2.0)
-                    if item is None:
-                        # Sentinel пришёл во время сбора — записываем что есть и выходим
-                        await _write_rows(rows_to_write)
-                        logging.info("🛑 Worker очереди завершён (graceful shutdown)")
-                        return
-                    rows_to_write.append(item)
-            except (asyncio.TimeoutError, asyncio.QueueEmpty):
-                pass
-
-            # Пишем собранную пачку
-            if rows_to_write:
-                await _write_rows(rows_to_write)
-
-        except Exception as e:
-            logging.error(f"❌ Критическая ошибка в worker очереди: {e}")
-            # Сохраняем что успели собрать
-            if rows_to_write:
-                _save_to_dead_letter(rows_to_write)
-            await asyncio.sleep(5)
-
-
-async def _write_rows(rows: list[list]) -> None:
-    """Записывает строки в таблицу с ретраями. При неудаче — в dead-letter."""
-    global _SHEET_CACHE
-
+    Добавляет или обновляет строку за указанную дату.
+    Возвращает True при успехе.
+    """
     for attempt in range(1, MAX_RETRIES + 1):
-        worksheet = get_sheet()
-        if not worksheet:
-            logging.error("❌ Не удалось получить таблицу, пробуем обновить кеш...")
-            worksheet = get_sheet(force_refresh=True)
-            if not worksheet:
-                logging.error(f"❌ Попытка {attempt}/{MAX_RETRIES}: таблица недоступна")
+        ws = await asyncio.to_thread(get_stats_sheet)
+        if not ws:
+            ws = await asyncio.to_thread(get_stats_sheet, True)
+            if not ws:
                 await asyncio.sleep(2 ** attempt)
                 continue
         try:
-            await asyncio.to_thread(worksheet.append_rows, rows)
-            logging.info(f"✅ Записано пачкой: {len(rows)} строк")
-            return  # Успех
+            all_rows = await asyncio.to_thread(ws.get_all_values)
+            data = all_rows[1:]  # без заголовка
+
+            # Находим предыдущий total
+            prev_total = 0
+            for row in reversed(data):
+                if len(row) >= 5 and row[4]:
+                    try:
+                        prev_total = int(str(row[4]).replace(" ", "").replace(",", ""))
+                        break
+                    except ValueError:
+                        continue
+
+            net = joins - leaves
+            total = prev_total + net
+
+            # Ищем существующую строку за эту дату
+            row_index = None
+            for i, row in enumerate(data):
+                if row and row[0] == date_str:
+                    row_index = i + 2  # +1 заголовок, +1 1-based
+                    break
+
+            new_row = [date_str, joins, leaves, f"+{net}" if net >= 0 else str(net), total]
+
+            if row_index:
+                # Обновляем существующую строку
+                await asyncio.to_thread(
+                    ws.update,
+                    f"A{row_index}:E{row_index}",
+                    [new_row]
+                )
+                logging.info(f"✅ Обновлена строка за {date_str}: +{joins}/-{leaves}, итого={total}")
+            else:
+                # Новая строка
+                await asyncio.to_thread(ws.append_row, new_row)
+                logging.info(f"✅ Добавлена строка за {date_str}: +{joins}/-{leaves}, итого={total}")
+            return True
+
         except gspread.exceptions.APIError as e:
-            logging.error(f"❌ Попытка {attempt}/{MAX_RETRIES} — API ошибка: {e}")
-            _SHEET_CACHE = None
+            logging.error(f"❌ API ошибка (попытка {attempt}): {e}")
+            global _stats_sheet
+            _stats_sheet = None
             await asyncio.sleep(2 ** attempt)
         except Exception as e:
-            logging.error(f"❌ Попытка {attempt}/{MAX_RETRIES} — ошибка: {e}")
+            logging.error(f"❌ Ошибка записи (попытка {attempt}): {e}")
             await asyncio.sleep(2 ** attempt)
 
-    # Все попытки исчерпаны — в dead-letter
-    _save_to_dead_letter(rows)
+    logging.error(f"❌ Не удалось записать строку за {date_str} после {MAX_RETRIES} попыток")
+    return False
 
+
+async def read_last_rows(n: int = 7) -> list[dict]:
+    """
+    Читает последние N строк из листа «Статистика».
+    Возвращает список словарей: {'date', 'joins', 'leaves', 'net', 'total'}.
+    """
+    ws = await asyncio.to_thread(get_stats_sheet)
+    if not ws:
+        return []
+    try:
+        all_rows = await asyncio.to_thread(ws.get_all_values)
+        data = all_rows[1:]  # без заголовка
+        data = [r for r in data if r and r[0] and r[0] != "(архив до перехода)"]
+        recent = data[-n:] if len(data) >= n else data
+        result = []
+        for row in recent:
+            try:
+                result.append({
+                    "date": row[0] if len(row) > 0 else "",
+                    "joins": int(row[1]) if len(row) > 1 and row[1] else 0,
+                    "leaves": int(row[2]) if len(row) > 2 and row[2] else 0,
+                    "net": row[3] if len(row) > 3 else "0",
+                    "total": int(str(row[4]).replace(" ", "").replace(",", "")) if len(row) > 4 and row[4] else 0,
+                })
+            except (ValueError, IndexError):
+                continue
+        return result
+    except Exception as e:
+        logging.error(f"Ошибка чтения последних строк: {e}")
+        return []

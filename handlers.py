@@ -16,7 +16,7 @@ from config import (
     SYSTEM_PROMPT,
 )
 import config
-from sheets import get_sheet
+from sheets import write_daily_row, read_last_rows
 from llm import ask_llm
 from web_search import search_web, format_search_context
 import state
@@ -31,49 +31,46 @@ def _tz():
 
 # --- ЕЖЕДНЕВНАЯ СВОДКА ---
 async def send_daily_report(bot: Bot):
-    """Отправляет админу статистику за вчерашний день и текущее утро."""
+    """Записывает итог дня в таблицу и отправляет сводку."""
     if not ADMIN_ID:
         return
 
-    worksheet = get_sheet()
-    if not worksheet:
-        await bot.send_message(ADMIN_ID, "❌ Не удалось получить данные из таблицы")
-        return
+    now = datetime.now(_tz())
+    # День, который ЗАВЕРШИЛСЯ (если запускаемся в 09:00 — это вчера)
+    yesterday = (now - timedelta(days=1)).strftime("%d.%m.%Y")
+    today = now.strftime("%d.%m.%Y")
+
+    # Сохраняем итог вчерашнего дня в таблицу
+    # (today_joins/today_leaves накоплены за прошедший день)
+    t_joins = state.today_joins.reset()
+    t_leaves = state.today_leaves.reset()
+
+    await write_daily_row(yesterday, t_joins, t_leaves)
+
+    # Читаем последние 7 строк для недельной картины
+    last_rows = await read_last_rows(7)
+    w_joins = sum(r["joins"] for r in last_rows)
+    w_leaves = sum(r["leaves"] for r in last_rows)
+    w_net = w_joins - w_leaves
+    w_net_str = f"+{w_net}" if w_net >= 0 else str(w_net)
+    last_total = last_rows[-1]["total"] if last_rows else 0
+
+    t_net = t_joins - t_leaves
+    t_net_str = f"+{t_net}" if t_net >= 0 else str(t_net)
 
     try:
-        now = datetime.now(_tz())
-        yesterday = (now - timedelta(days=1)).strftime("%d.%m.%Y")
-        today = now.strftime("%d.%m.%Y")
-        
-        all_rows = await asyncio.to_thread(worksheet.get_all_values)
-        data_rows = all_rows[1:]  # Пропускаем заголовок
-
-        y_joins = sum(1 for r in data_rows if r[0] == yesterday and len(r) >= 6 and "Подписка" in r[5])
-        y_leaves = sum(1 for r in data_rows if r[0] == yesterday and len(r) >= 6 and "Отписка" in r[5])
-        t_joins = sum(1 for r in data_rows if r[0] == today and len(r) >= 6 and "Подписка" in r[5])
-        t_leaves = sum(1 for r in data_rows if r[0] == today and len(r) >= 6 and "Отписка" in r[5])
-        total_count = len(data_rows)
-
-        y_net = y_joins - y_leaves
-        y_net_str = f"+{y_net}" if y_net >= 0 else str(y_net)
-        t_net = t_joins - t_leaves
-        t_net_str = f"+{t_net}" if t_net >= 0 else str(t_net)
-
         text = (
             f"📊 <b>Ежедневная сводка</b>\n\n"
             f"🗓 <b>Вчера ({yesterday}):</b>\n"
-            f"   ➕ {y_joins}  ➖ {y_leaves}  (итого {y_net_str})\n\n"
-            f"🌤 <b>Сегодня ({today}):</b>\n"
             f"   ➕ {t_joins}  ➖ {t_leaves}  (итого {t_net_str})\n\n"
-            f"👥 <b>Всего записей:</b> {total_count}"
+            f"📅 <b>За неделю:</b>\n"
+            f"   ➕ {w_joins}  ➖ {w_leaves}  (итого {w_net_str})\n\n"
+            f"👥 <b>Подписчиков всего:</b> ~{last_total:,}".replace(",", " ")
         )
-
         await bot.send_message(ADMIN_ID, text, parse_mode="HTML", disable_notification=True)
-        logging.info(f"✅ Отправлена ежедневная сводка. Вчера: {y_net_str}, Сегодня: {t_net_str}")
-
+        logging.info(f"✅ Ежедневная сводка: {t_net_str}, всего ~{last_total}")
     except Exception as e:
-        logging.error(f"Ошибка при формировании ежедневной сводки: {e}")
-        await bot.send_message(ADMIN_ID, f"❌ Ошибка при подсчете статистики: {e}")
+        logging.error(f"Ошибка при отправке ежедневной сводки: {e}")
 
 
 async def send_periodic_report(bot: Bot):
@@ -108,58 +105,50 @@ async def send_periodic_report(bot: Bot):
 # --- КОМАНДЫ ---
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, bot: Bot):
-    """
-    Отправляет статистику по запросу админа.
-
-    ПЕРИОД ПОДСЧЕТА:
-    - "Новых сегодня" считаются все подписчики, у которых в столбце "Дата"
-      указано текущее календарное число (формат дд.мм.гггг).
-    - Используется московское время (MSK, GMT+3).
-    - Период: с 00:00:00 до 23:59:59 текущего дня по МСК.
-    """
+    """Статистика: сегодня из памяти + неделя из таблицы."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    worksheet = get_sheet()
-    if not worksheet:
-        await message.answer("❌ Не удалось получить данные из таблицы")
-        return
+    today = datetime.now(_tz()).strftime("%d.%m.%Y")
+    t_joins = state.today_joins.value
+    t_leaves = state.today_leaves.value
+    t_net = t_joins - t_leaves
+    t_net_str = f"+{t_net}" if t_net >= 0 else str(t_net)
 
-    try:
-        all_rows = await asyncio.to_thread(worksheet.get_all_values)
-        data_rows = all_rows[1:]  # Пропускаем заголовок
+    # Surge
+    surge_info = ""
+    if state.surge_detector:
+        joins_w, leaves_w = state.surge_detector.get_counts()
+        if joins_w > 0 or leaves_w > 0:
+            surge_info = (
+                f"\n⚡ За последние {SURGE_WINDOW_SECONDS // 60} мин: "
+                f"<b>+{joins_w} / -{leaves_w}</b>"
+            )
 
-        today = datetime.now(_tz()).strftime("%d.%m.%Y")
-        today_joins = sum(1 for r in data_rows if r[0] == today and len(r) >= 6 and "Подписка" in r[5])
-        today_leaves = sum(1 for r in data_rows if r[0] == today and len(r) >= 6 and "Отписка" in r[5])
-        total_count = len(data_rows)
-        net = today_joins - today_leaves
-        net_str = f"+{net}" if net >= 0 else str(net)
+    # Читаем последние 7 дней из таблицы
+    last_rows = await read_last_rows(7)
+    w_joins = sum(r["joins"] for r in last_rows)
+    w_leaves = sum(r["leaves"] for r in last_rows)
+    w_net = w_joins - w_leaves
+    w_net_str = f"+{w_net}" if w_net >= 0 else str(w_net)
+    last_total = last_rows[-1]["total"] if last_rows else "?"
 
-        # Текущий surge
-        surge_info = ""
-        if state.surge_detector:
-            joins_w, leaves_w = state.surge_detector.get_counts()
-            if joins_w > 0 or leaves_w > 0:
-                surge_info = (
-                    f"\n⚡ За последние {SURGE_WINDOW_SECONDS // 60} мин: "
-                    f"<b>+{joins_w} / -{leaves_w}</b>"
-                )
+    week_lines = ""
+    if last_rows:
+        for r in last_rows:
+            week_lines += f"  {r['date']}: ➕{r['joins']} ➖{r['leaves']} ({r['net']})\n"
 
-        text = (
-            f"📊 <b>Текущая статистика</b>\n\n"
-            f"📅 Сегодня: {today}\n"
-            f"➕ Подписок: <b>{today_joins}</b>\n"
-            f"➖ Отписок: <b>{today_leaves}</b>\n"
-            f"📈 Чистый рост: <b>{net_str}</b>\n"
-            f"👥 Всего записей: <b>{total_count}</b>"
-            f"{surge_info}"
-        )
-        await message.answer(text, parse_mode="HTML")
-
-    except Exception as e:
-        logging.error(f"Ошибка команды /stats: {e}")
-        await message.answer(f"❌ Ошибка: {e}")
+    text = (
+        f"📊 <b>Текущая статистика</b>\n\n"
+        f"📅 Сегодня ({today}):\n"
+        f"   ➕ {t_joins}  ➖ {t_leaves}  (итого {t_net_str})\n"
+        f"{surge_info}\n"
+        f"📆 <b>Последние 7 дней:</b>\n"
+        f"{week_lines}"
+        f"   Итого: ➕{w_joins} ➖{w_leaves} ({w_net_str})\n\n"
+        f"👥 <b>Подписчиков ~{last_total:,}</b>".replace(",", " ")
+    )
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(Command("help"))
@@ -295,20 +284,10 @@ async def cmd_search(message: Message):
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> MEMBER))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     user = event.new_chat_member.user
-    now = datetime.now(_tz())
+    logging.info(f"🔔 Новый подписчик: {user.full_name} ({user.id})")
 
-    date_str = now.strftime("%d.%m.%Y")
-    time_str = now.strftime("%H:%M:%S")
-    full_name = user.full_name or "Без имени"
-    username = f"@{user.username}" if user.username else ""
-    user_id = str(user.id)
-
-    logging.info(f"🔔 Новый подписчик: {full_name} ({user_id})")
-
-    # Запись в Google Sheets
-    await state.sheet_queue.put([date_str, time_str, user_id, full_name, username, "➕ Подписка"])
-
-    # Счётчик для периодической сводки
+    # Только счётчики в памяти — в таблицу пишем раз в день агрегатом
+    state.today_joins.increment()
     state.periodic_joins.increment()
 
     # Surge detection — алерт только при всплеске
@@ -330,30 +309,14 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
 async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
     """Обработка отписки пользователя (в т.ч. кик)."""
     user = event.old_chat_member.user
-    # New status
     new_status = event.new_chat_member.status
-    
-    now = datetime.now(_tz())
+    action_log = "kicked/banned" if new_status == KICKED else "left"
+    logging.info(f"👋 User {action_log}: {user.full_name} ({user.id})")
 
-    date_str = now.strftime("%d.%m.%Y")
-    time_str = now.strftime("%H:%M:%S")
-    full_name = user.full_name or "Без имени"
-    username = f"@{user.username}" if user.username else ""
-    user_id = str(user.id)
-
-    if new_status == KICKED:
-        action = "❌ Отписка (кик)"
-        logging.info(f"🚫 User kicked/banned: {full_name} ({user_id})")
-    else:
-        action = "❌ Отписка"
-        logging.info(f"👋 User left: {full_name} ({user_id})")
-
-    # Запись в Google Sheets
-    await state.sheet_queue.put([date_str, time_str, user_id, full_name, username, action])
-
-    # Счётчик для периодической сводки
+    # Только счётчики в памяти
+    state.today_leaves.increment()
     state.periodic_leaves.increment()
 
-    # Учёт в surge detector (не триггерит алерт)
+    # Учёт в surge detector
     if state.surge_detector:
         state.surge_detector.record_leave()

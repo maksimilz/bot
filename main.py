@@ -22,7 +22,7 @@ from config import (
 )
 import state
 from surge import SurgeDetector, WaveAction
-from sheets import get_sheet, process_sheet_queue
+from sheets import get_stats_sheet
 from handlers import router, send_daily_report, send_periodic_report
 from rss_checker import check_rss_feed
 from web_server import start_web_server
@@ -77,7 +77,6 @@ async def main():
     dp.include_router(router)
 
     # Инициализируем глобальное состояние
-    state.sheet_queue = asyncio.Queue()
     state.surge_detector = SurgeDetector(
         window_seconds=SURGE_WINDOW_SECONDS,
         threshold=SURGE_THRESHOLD,
@@ -86,8 +85,8 @@ async def main():
         update_interval=SURGE_UPDATE_INTERVAL,
     )
 
-    # Запускаем обработчик очереди в фоне (сохраняем ссылку!)
-    queue_worker = asyncio.create_task(process_sheet_queue(state.sheet_queue))
+    # Инициализируем лист «Статистика» (создаёт если не существует, считает seed)
+    await asyncio.to_thread(get_stats_sheet)
 
     # Настраиваем планировщик для ежедневной сводки
     scheduler = AsyncIOScheduler(timezone=str(_tz()))
@@ -124,35 +123,25 @@ async def main():
     shutdown_event = asyncio.Event()
 
     async def graceful_shutdown():
-        """Корректное завершение: дренаж очереди, остановка планировщика."""
+        """Корректное завершение."""
         logging.info("🛑 Получен сигнал завершения, начинаем graceful shutdown...")
 
-        # 1. Останавливаем polling (убираем конфликт с новым инстансом)
+        # 1. Останавливаем polling
         await dp.stop_polling()
         logging.info("  ⏹ Polling остановлен")
 
-        # 2. Останавливаем планировщик (не запускаем новые задачи)
+        # 2. Останавливаем планировщик
         scheduler.shutdown(wait=False)
         logging.info("  ⏹ Планировщик остановлен")
 
-        # 3. Отправляем sentinel в очередь — worker допишет оставшееся и выйдет
-        if state.sheet_queue:
-            await state.sheet_queue.put(None)
-            try:
-                await asyncio.wait_for(queue_worker, timeout=15)
-                logging.info("  ✅ Worker очереди завершён")
-            except asyncio.TimeoutError:
-                logging.warning("  ⚠️ Worker не завершился за 15 сек, принудительная отмена")
-                queue_worker.cancel()
-
-        # 4. Уведомляем админа (если возможно)
+        # 3. Уведомляем админа
         if ADMIN_ID:
             try:
                 await bot.send_message(ADMIN_ID, "🛑 Бот остановлен (graceful shutdown)", disable_notification=True)
             except Exception:
                 pass
 
-        # 5. Закрываем сессию бота
+        # 4. Закрываем сессию бота
         await bot.session.close()
 
         shutdown_event.set()
@@ -176,22 +165,17 @@ async def main():
     # При старте проверим связь с таблицей
     if ADMIN_ID:
         try:
-            sheet = get_sheet()
-            if sheet:
-                await bot.send_message(
-                    ADMIN_ID,
-                    "🤖 Бот перезапущен. 🟢 Связь с Google Таблицей: ОК\n"
-                    "⏰ Ежедневные сводки активированы\n"
-                    "📦 Пакетная запись включена\n"
-                    "🛡 Graceful shutdown активен",
-                    disable_notification=True,
-                )
-            else:
-                await bot.send_message(
-                    ADMIN_ID,
-                    "🤖 Бот перезапущен. 🔴 ОШИБКА доступа к Таблице (см. логи)",
-                    disable_notification=True,
-                )
+            sheet_ok = await asyncio.to_thread(get_stats_sheet)
+            status = "🟢 Лист 'Статистика': ОК" if sheet_ok else "🔴 ОШИБКА доступа к Таблице"
+            await bot.send_message(
+                ADMIN_ID,
+                f"🤖 Бот перезапущен.\n"
+                f"{status}\n"
+                f"⏰ Ежедневные сводки активированы\n"
+                f"📊 Хранение: агрегаты по дням\n"
+                f"🛡 Graceful shutdown активен",
+                disable_notification=True,
+            )
         except Exception as e:
             logging.error(f"Ошибка старта: {e}")
 

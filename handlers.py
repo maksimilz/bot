@@ -131,7 +131,7 @@ async def cmd_stats(message: Message, bot: Bot):
     w_leaves = sum(r["leaves"] for r in last_rows)
     w_net = w_joins - w_leaves
     w_net_str = f"+{w_net}" if w_net >= 0 else str(w_net)
-    last_total = last_rows[-1]["total"] if last_rows else "?"
+    last_total = last_rows[-1]["total"] if last_rows else 0
 
     week_lines = ""
     if last_rows:
@@ -310,7 +310,7 @@ async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
     """Обработка отписки пользователя (в т.ч. кик)."""
     user = event.old_chat_member.user
     new_status = event.new_chat_member.status
-    action_log = "kicked/banned" if new_status == KICKED else "left"
+    action_log = "kicked/banned" if new_status == "kicked" else "left"
     logging.info(f"👋 User {action_log}: {user.full_name} ({user.id})")
 
     # Только счётчики в памяти

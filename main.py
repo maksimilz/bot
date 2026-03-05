@@ -17,7 +17,6 @@ from config import (
     SURGE_COOLDOWN_SECONDS,
     SURGE_QUIET_PERIOD,
     SURGE_UPDATE_INTERVAL,
-    SURGE_UPDATE_INTERVAL,
     PERIODIC_REPORT_HOURS,
 )
 import state
@@ -128,7 +127,11 @@ async def main():
         scheduler.shutdown(wait=False)
         logging.info("  ⏹ Планировщик остановлен")
 
-        # 3. Уведомляем админа
+        # 3. Останавливаем web-сервер
+        shutdown_event.set()
+        logging.info("  ⏹ Web-сервер остановлен")
+
+        # 4. Уведомляем админа
         if ADMIN_ID:
             try:
                 await bot.send_message(
@@ -139,10 +142,8 @@ async def main():
             except Exception:
                 pass
 
-        # 4. Закрываем сессию бота
+        # 5. Закрываем сессию бота
         await bot.session.close()
-
-        shutdown_event.set()
         logging.info("✅ Graceful shutdown завершён")
 
     def _signal_handler():
@@ -181,7 +182,7 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=False)
 
     await asyncio.gather(
-        start_web_server(),
+        start_web_server(shutdown_event),
         dp.start_polling(bot, handle_signals=False),
     )
 

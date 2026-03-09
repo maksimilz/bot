@@ -150,12 +150,13 @@ async def send_periodic_report(bot: Bot):
 
 # --- /start: показать клавиатуру ---
 @router.message(Command("start"))
-async def cmd_start(message: Message, state_fsm: FSMContext):
+async def cmd_start(message: Message, state_fsm: FSMContext = None):
     """Приветствие и показ клавиатуры."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    await state_fsm.clear()
+    if state_fsm:
+        await state_fsm.clear()
     await message.answer(
         "👋 Привет! Используй кнопки ниже для управления ботом.",
         reply_markup=_main_keyboard(),
@@ -164,11 +165,12 @@ async def cmd_start(message: Message, state_fsm: FSMContext):
 
 # --- КНОПКА «Отмена» (из любого состояния) ---
 @router.message(F.text == BTN_CANCEL)
-async def btn_cancel(message: Message, state_fsm: FSMContext):
+async def btn_cancel(message: Message, state_fsm: FSMContext = None):
     if message.from_user.id != ADMIN_ID:
         return
 
-    await state_fsm.clear()
+    if state_fsm:
+        await state_fsm.clear()
     await message.answer("↩️ Отменено.", reply_markup=_main_keyboard())
 
 
@@ -228,12 +230,13 @@ async def cmd_stats(message: Message, bot: Bot, state_fsm: FSMContext = None):
 # --- ПОМОЩЬ ---
 @router.message(F.text == BTN_HELP)
 @router.message(Command("help"))
-async def cmd_help(message: Message, state_fsm: FSMContext):
+async def cmd_help(message: Message, state_fsm: FSMContext = None):
     """Список доступных команд для админа."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    await state_fsm.clear()
+    if state_fsm:
+        await state_fsm.clear()
 
     text = (
         "📋 <b>Доступные команды</b>\n\n"
@@ -256,12 +259,13 @@ async def cmd_help(message: Message, state_fsm: FSMContext):
 # --- НОВЫЙ ДИАЛОГ ---
 @router.message(F.text == BTN_NEW)
 @router.message(Command("new"))
-async def cmd_new(message: Message, state_fsm: FSMContext):
+async def cmd_new(message: Message, state_fsm: FSMContext = None):
     """Очистить память диалога с ИИ."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    await state_fsm.clear()
+    if state_fsm:
+        await state_fsm.clear()
 
     user_id = message.from_user.id
     if user_id in state.messages_history:

@@ -24,6 +24,7 @@ from surge import SurgeDetector, WaveAction
 from sheets import get_stats_sheet
 from handlers import router, send_daily_report, send_periodic_report
 from web_server import start_web_server
+from llm import close_llm_session
 
 
 def _tz():
@@ -83,6 +84,9 @@ async def main():
         update_interval=SURGE_UPDATE_INTERVAL,
     )
 
+    # Восстанавливаем счётчики из файла (если бот перезапускался)
+    state.load_counters()
+
     # Инициализируем лист «Статистика» (создаёт если не существует, считает seed)
     await asyncio.to_thread(get_stats_sheet)
 
@@ -104,6 +108,10 @@ async def main():
         check_wave_status, 'interval',
         seconds=30,
         args=[bot],
+    )
+    scheduler.add_job(
+        state.save_counters, 'interval',
+        minutes=5,
     )
     scheduler.start()
     logging.info(
@@ -127,11 +135,19 @@ async def main():
         scheduler.shutdown(wait=False)
         logging.info("  ⏹ Планировщик остановлен")
 
-        # 3. Останавливаем web-сервер
+        # 3. Сохраняем счётчики перед выходом
+        state.save_counters()
+        logging.info("  💾 Счётчики сохранены")
+
+        # 4. Закрываем LLM-сессию
+        await close_llm_session()
+        logging.info("  ⏹ LLM-сессия закрыта")
+
+        # 5. Останавливаем web-сервер
         shutdown_event.set()
         logging.info("  ⏹ Web-сервер остановлен")
 
-        # 4. Уведомляем админа
+        # 6. Уведомляем админа
         if ADMIN_ID:
             try:
                 await bot.send_message(
@@ -142,7 +158,7 @@ async def main():
             except Exception:
                 pass
 
-        # 5. Закрываем сессию бота
+        # 7. Закрываем сессию бота
         await bot.session.close()
         logging.info("✅ Graceful shutdown завершён")
 

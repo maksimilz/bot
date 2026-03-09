@@ -2,13 +2,16 @@
 Модуль интеграции с OpenRouter LLM.
 
 Использование:
-    from llm import ask_llm
+    from llm import ask_llm, close_llm_session
 
     messages = [
         {"role": "system", "content": "Ты полезный ассистент."},
         {"role": "user", "content": "Привет!"},
     ]
     answer = await ask_llm(messages)
+
+    # При завершении работы:
+    await close_llm_session()
 
 Перед использованием задай переменные окружения:
     OPENROUTER_API_KEY  — API-ключ OpenRouter (обязательно)
@@ -19,6 +22,27 @@ import logging
 import aiohttp
 
 from config import OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_BASE_URL
+
+# Единственная сессия, переиспользуемая между запросами
+_session: aiohttp.ClientSession | None = None
+
+
+def _get_session() -> aiohttp.ClientSession:
+    """Возвращает (или создаёт) единственную ClientSession."""
+    global _session
+    if _session is None or _session.closed:
+        _session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+        )
+    return _session
+
+
+async def close_llm_session() -> None:
+    """Закрывает HTTP-сессию. Вызвать при graceful shutdown."""
+    global _session
+    if _session and not _session.closed:
+        await _session.close()
+        _session = None
 
 
 async def ask_llm(
@@ -54,22 +78,21 @@ async def ask_llm(
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                OPENROUTER_BASE_URL,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    logging.error(
-                        f"❌ OpenRouter API ошибка {resp.status}: {error_text}"
-                    )
-                    return None
+        session = _get_session()
+        async with session.post(
+            OPENROUTER_BASE_URL,
+            json=payload,
+            headers=headers,
+        ) as resp:
+            if resp.status != 200:
+                error_text = await resp.text()
+                logging.error(
+                    f"❌ OpenRouter API ошибка {resp.status}: {error_text}"
+                )
+                return None
 
-                data = await resp.json()
-                return data["choices"][0]["message"]["content"]
+            data = await resp.json()
+            return data["choices"][0]["message"]["content"]
 
     except aiohttp.ClientError as e:
         logging.error(f"❌ Ошибка сети при запросе к OpenRouter: {e}")

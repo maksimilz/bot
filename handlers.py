@@ -46,6 +46,7 @@ async def send_daily_report(bot: Bot):
     t_leaves = state.today_leaves.reset()
 
     await write_daily_row(yesterday, t_joins, t_leaves)
+    state.save_counters()  # сохраняем после сброса
 
     # Читаем последние 7 строк для недельной картины
     last_rows = await read_last_rows(7)
@@ -81,6 +82,7 @@ async def send_periodic_report(bot: Bot):
     # Атомарно читаем и сбрасываем счётчики
     joins = state.periodic_joins.reset()
     leaves = state.periodic_leaves.reset()
+    state.save_counters()  # сохраняем после сброса
 
     if joins == 0 and leaves == 0:
         return  # Нет событий — молчим
@@ -289,6 +291,7 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     # Только счётчики в памяти — в таблицу пишем раз в день агрегатом
     state.today_joins.increment()
     state.periodic_joins.increment()
+    state.save_counters()
 
     # Surge detection — алерт только при всплеске
     if state.surge_detector:
@@ -316,6 +319,7 @@ async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
     # Только счётчики в памяти
     state.today_leaves.increment()
     state.periodic_leaves.increment()
+    state.save_counters()
 
     # Учёт в surge detector
     if state.surge_detector:

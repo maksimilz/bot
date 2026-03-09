@@ -4,9 +4,17 @@ from collections import deque
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import ChatMemberUpdatedFilter, Command, IS_NOT_MEMBER, IS_MEMBER, MEMBER, KICKED
-from aiogram.types import ChatMemberUpdated, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    ChatMemberUpdated,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
 from config import (
     ADMIN_ID,
@@ -24,9 +32,43 @@ import state
 
 router = Router()
 
+# --- ТЕКСТ КНОПОК ---
+BTN_STATS = "📊 Статистика"
+BTN_ASK = "🤖 Спросить ИИ"
+BTN_SEARCH = "🔍 Поиск"
+BTN_NEW = "🗑 Новый диалог"
+BTN_HELP = "❓ Помощь"
+BTN_CANCEL = "❌ Отмена"
+
+
+# --- FSM-состояния ---
+class BotStates(StatesGroup):
+    waiting_ask = State()      # ждём текст вопроса для ИИ
+    waiting_search = State()   # ждём текст запроса для поиска
+
 
 def _tz():
     return ZoneInfo("Europe/Moscow")
+
+
+def _main_keyboard() -> ReplyKeyboardMarkup:
+    """Основная клавиатура с кнопками."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ASK)],
+            [KeyboardButton(text=BTN_SEARCH), KeyboardButton(text=BTN_NEW)],
+            [KeyboardButton(text=BTN_HELP)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def _cancel_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура с кнопкой отмены (когда ожидаем ввод)."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_CANCEL)]],
+        resize_keyboard=True,
+    )
 
 
 # --- ЕЖЕДНЕВНАЯ СВОДКА ---
@@ -104,12 +146,41 @@ async def send_periodic_report(bot: Bot):
         logging.error(f"Ошибка отправки периодической сводки: {e}")
 
 
-# --- КОМАНДЫ ---
+# === КОМАНДЫ (остаются для удобства + обрабатываем кнопки) ===
+
+# --- /start: показать клавиатуру ---
+@router.message(Command("start"))
+async def cmd_start(message: Message, state_fsm: FSMContext):
+    """Приветствие и показ клавиатуры."""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await state_fsm.clear()
+    await message.answer(
+        "👋 Привет! Используй кнопки ниже для управления ботом.",
+        reply_markup=_main_keyboard(),
+    )
+
+
+# --- КНОПКА «Отмена» (из любого состояния) ---
+@router.message(F.text == BTN_CANCEL)
+async def btn_cancel(message: Message, state_fsm: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await state_fsm.clear()
+    await message.answer("↩️ Отменено.", reply_markup=_main_keyboard())
+
+
+# --- СТАТИСТИКА ---
+@router.message(F.text == BTN_STATS)
 @router.message(Command("stats"))
-async def cmd_stats(message: Message, bot: Bot):
+async def cmd_stats(message: Message, bot: Bot, state_fsm: FSMContext):
     """Статистика: сегодня из памяти + неделя из таблицы."""
     if message.from_user.id != ADMIN_ID:
         return
+
+    await state_fsm.clear()
 
     today = datetime.now(_tz()).strftime("%d.%m.%Y")
     t_joins = state.today_joins.value
@@ -150,22 +221,26 @@ async def cmd_stats(message: Message, bot: Bot):
         f"   Итого: ➕{w_joins} ➖{w_leaves} ({w_net_str})\n\n"
         f"👥 <b>Подписчиков ~{last_total:,}</b>".replace(",", " ")
     )
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML", reply_markup=_main_keyboard())
 
 
+# --- ПОМОЩЬ ---
+@router.message(F.text == BTN_HELP)
 @router.message(Command("help"))
-async def cmd_help(message: Message):
+async def cmd_help(message: Message, state_fsm: FSMContext):
     """Список доступных команд для админа."""
     if message.from_user.id != ADMIN_ID:
         return
 
+    await state_fsm.clear()
+
     text = (
         "📋 <b>Доступные команды</b>\n\n"
-        "/stats — Текущая статистика подписчиков\n"
-        "/ask — Задать вопрос ИИ (помнит контекст)\n"
-        "/search — Поиск в интернете через ИИ\n"
-        "/new — Новый диалог (очистить память ИИ)\n"
-        "/help — Этот список команд\n\n"
+        f"{BTN_STATS} — Текущая статистика подписчиков\n"
+        f"{BTN_ASK} — Задать вопрос ИИ (помнит контекст)\n"
+        f"{BTN_SEARCH} — Поиск в интернете через ИИ\n"
+        f"{BTN_NEW} — Новый диалог (очистить память ИИ)\n"
+        f"{BTN_HELP} — Этот список команд\n\n"
         "<i>Бот автоматически отслеживает подписки и отписки, "
         "записывает данные в Google Таблицу.</i>\n\n"
         "📬 <b>Уведомления:</b>\n"
@@ -174,38 +249,74 @@ async def cmd_help(message: Message):
         f"📊 Мини-сводка: каждые {PERIODIC_REPORT_HOURS}ч\n"
         "📅 Ежедневная сводка: 09:00 МСК"
     )
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML", reply_markup=_main_keyboard())
 
 
+# --- НОВЫЙ ДИАЛОГ ---
+@router.message(F.text == BTN_NEW)
 @router.message(Command("new"))
-async def cmd_new(message: Message):
+async def cmd_new(message: Message, state_fsm: FSMContext):
     """Очистить память диалога с ИИ."""
     if message.from_user.id != ADMIN_ID:
         return
 
+    await state_fsm.clear()
+
     user_id = message.from_user.id
     if user_id in state.messages_history:
         state.messages_history[user_id].clear()
-    await message.answer("🗑 Память очищена. Новый диалог начат!")
+    await message.answer("🗑 Память очищена. Новый диалог начат!", reply_markup=_main_keyboard())
+
+
+# --- СПРОСИТЬ ИИ (кнопка → ожидание ввода) ---
+@router.message(F.text == BTN_ASK)
+async def btn_ask(message: Message, state_fsm: FSMContext):
+    """Нажатие кнопки «Спросить ИИ» — переходим в режим ожидания вопроса."""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await state_fsm.set_state(BotStates.waiting_ask)
+    await message.answer(
+        "✏️ Напиши свой вопрос для ИИ:",
+        reply_markup=_cancel_keyboard(),
+    )
 
 
 @router.message(Command("ask"))
 async def cmd_ask(message: Message):
-    """Задать вопрос ИИ через OpenRouter с памятью контекста (10 сообщений)."""
+    """Команда /ask с текстом сразу."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    user_id = message.from_user.id
     question = message.text.replace("/ask", "", 1).strip()
-    
     if not question:
-        await message.answer("✏️ Напиши вопрос после /ask\n\nПример: /ask Какая погода в Москве?")
+        await message.answer(
+            "✏️ Напиши вопрос после /ask\n\nПример: /ask Какая погода в Москве?",
+            reply_markup=_main_keyboard(),
+        )
         return
+
+    await _process_ask(message, question)
+
+
+@router.message(BotStates.waiting_ask)
+async def process_ask_input(message: Message, state_fsm: FSMContext):
+    """Получили текст вопроса после нажатия кнопки «Спросить ИИ»."""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await state_fsm.clear()
+    await _process_ask(message, message.text)
+
+
+async def _process_ask(message: Message, question: str):
+    """Общая логика обработки вопроса для ИИ."""
+    user_id = message.from_user.id
 
     # Инициализация истории для пользователя
     if user_id not in state.messages_history:
         state.messages_history[user_id] = deque(maxlen=10)
-    
+
     history = state.messages_history[user_id]
     history.append({"role": "user", "content": question})
 
@@ -219,36 +330,71 @@ async def cmd_ask(message: Message):
 
     if answer:
         history.append({"role": "assistant", "content": answer})
-        await message.answer(answer)
+        await message.answer(answer, reply_markup=_main_keyboard())
     else:
         # Если ошибка, удаляем последний вопрос из истории, чтобы не засорять
         if history and history[-1]["role"] == "user":
             history.pop()
-        await message.answer(f"❌ Не удалось получить ответ от LLM. Проверь баланс/ключ.\nМодель: {config.OPENROUTER_MODEL}")
+        await message.answer(
+            f"❌ Не удалось получить ответ от LLM. Проверь баланс/ключ.\nМодель: {config.OPENROUTER_MODEL}",
+            reply_markup=_main_keyboard(),
+        )
+
+
+# --- ПОИСК (кнопка → ожидание ввода) ---
+@router.message(F.text == BTN_SEARCH)
+async def btn_search(message: Message, state_fsm: FSMContext):
+    """Нажатие кнопки «Поиск» — переходим в режим ожидания запроса."""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await state_fsm.set_state(BotStates.waiting_search)
+    await message.answer(
+        "🔍 Напиши поисковый запрос:",
+        reply_markup=_cancel_keyboard(),
+    )
 
 
 @router.message(Command("search"))
 async def cmd_search(message: Message):
-    """Поиск в интернете через DuckDuckGo + ответ от LLM."""
+    """Команда /search с текстом сразу."""
     if message.from_user.id != ADMIN_ID:
         return
 
     query = message.text.replace("/search", "", 1).strip()
-
     if not query:
         await message.answer(
             "🔍 Напиши запрос после /search\n\n"
-            "Пример: /search последние новости Python"
+            "Пример: /search последние новости Python",
+            reply_markup=_main_keyboard(),
         )
         return
 
+    await _process_search(message, query)
+
+
+@router.message(BotStates.waiting_search)
+async def process_search_input(message: Message, state_fsm: FSMContext):
+    """Получили текст запроса после нажатия кнопки «Поиск»."""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await state_fsm.clear()
+    await _process_search(message, message.text)
+
+
+async def _process_search(message: Message, query: str):
+    """Общая логика обработки поискового запроса."""
     await message.answer("🔍 Ищу в интернете...")
 
     # Поиск в DuckDuckGo
     results = await search_web(query, max_results=5)
 
     if not results:
-        await message.answer("❌ Ничего не найдено. Попробуй другой запрос.")
+        await message.answer(
+            "❌ Ничего не найдено. Попробуй другой запрос.",
+            reply_markup=_main_keyboard(),
+        )
         return
 
     # Формируем контекст для LLM
@@ -270,7 +416,7 @@ async def cmd_search(message: Message):
     answer = await ask_llm(messages=[system_msg, user_msg], max_tokens=1500)
 
     if answer:
-        await message.answer(answer)
+        await message.answer(answer, reply_markup=_main_keyboard())
     else:
         # Если LLM не ответил, покажем сырые результаты
         fallback = "🔍 <b>Результаты поиска:</b>\n\n"
@@ -279,7 +425,7 @@ async def cmd_search(message: Message):
             url = r.get("href", "")
             snippet = r.get("body", "")
             fallback += f"📌 <b>{title}</b>\n{snippet}\n{url}\n\n"
-        await message.answer(fallback, parse_mode="HTML")
+        await message.answer(fallback, parse_mode="HTML", reply_markup=_main_keyboard())
 
 
 # --- СОБЫТИЯ ПОДПИСКИ / ОТПИСКИ ---

@@ -175,12 +175,13 @@ async def btn_cancel(message: Message, state_fsm: FSMContext):
 # --- СТАТИСТИКА ---
 @router.message(F.text == BTN_STATS)
 @router.message(Command("stats"))
-async def cmd_stats(message: Message, bot: Bot, state_fsm: FSMContext):
+async def cmd_stats(message: Message, bot: Bot, state_fsm: FSMContext = None):
     """Статистика: сегодня из памяти + неделя из таблицы."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    await state_fsm.clear()
+    if state_fsm:
+        await state_fsm.clear()
 
     today = datetime.now(_tz()).strftime("%d.%m.%Y")
     t_joins = state.today_joins.value

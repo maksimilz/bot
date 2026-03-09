@@ -27,7 +27,7 @@ import config
 from sheets import write_daily_row, read_last_rows
 from llm import ask_llm
 from web_search import search_web, format_search_context
-import state
+import state as app_state
 
 
 router = Router()
@@ -84,11 +84,11 @@ async def send_daily_report(bot: Bot):
 
     # Сохраняем итог вчерашнего дня в таблицу
     # (today_joins/today_leaves накоплены за прошедший день)
-    t_joins = state.today_joins.reset()
-    t_leaves = state.today_leaves.reset()
+    t_joins = app_state.today_joins.reset()
+    t_leaves = app_state.today_leaves.reset()
 
     await write_daily_row(yesterday, t_joins, t_leaves)
-    state.save_counters()  # сохраняем после сброса
+    app_state.save_counters()  # сохраняем после сброса
 
     # Читаем последние 7 строк для недельной картины
     last_rows = await read_last_rows(7)
@@ -122,9 +122,9 @@ async def send_periodic_report(bot: Bot):
         return
 
     # Атомарно читаем и сбрасываем счётчики
-    joins = state.periodic_joins.reset()
-    leaves = state.periodic_leaves.reset()
-    state.save_counters()  # сохраняем после сброса
+    joins = app_state.periodic_joins.reset()
+    leaves = app_state.periodic_leaves.reset()
+    app_state.save_counters()  # сохраняем после сброса
 
     if joins == 0 and leaves == 0:
         return  # Нет событий — молчим
@@ -150,13 +150,13 @@ async def send_periodic_report(bot: Bot):
 
 # --- /start: показать клавиатуру ---
 @router.message(Command("start"))
-async def cmd_start(message: Message, state_fsm: FSMContext = None):
+async def cmd_start(message: Message, state: FSMContext = None):
     """Приветствие и показ клавиатуры."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    if state_fsm:
-        await state_fsm.clear()
+    if state:
+        await state.clear()
     await message.answer(
         "👋 Привет! Используй кнопки ниже для управления ботом.",
         reply_markup=_main_keyboard(),
@@ -165,36 +165,36 @@ async def cmd_start(message: Message, state_fsm: FSMContext = None):
 
 # --- КНОПКА «Отмена» (из любого состояния) ---
 @router.message(F.text == BTN_CANCEL)
-async def btn_cancel(message: Message, state_fsm: FSMContext = None):
+async def btn_cancel(message: Message, state: FSMContext = None):
     if message.from_user.id != ADMIN_ID:
         return
 
-    if state_fsm:
-        await state_fsm.clear()
+    if state:
+        await state.clear()
     await message.answer("↩️ Отменено.", reply_markup=_main_keyboard())
 
 
 # --- СТАТИСТИКА ---
 @router.message(F.text == BTN_STATS)
 @router.message(Command("stats"))
-async def cmd_stats(message: Message, bot: Bot, state_fsm: FSMContext = None):
+async def cmd_stats(message: Message, bot: Bot, state: FSMContext = None):
     """Статистика: сегодня из памяти + неделя из таблицы."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    if state_fsm:
-        await state_fsm.clear()
+    if state:
+        await state.clear()
 
     today = datetime.now(_tz()).strftime("%d.%m.%Y")
-    t_joins = state.today_joins.value
-    t_leaves = state.today_leaves.value
+    t_joins = app_state.today_joins.value
+    t_leaves = app_state.today_leaves.value
     t_net = t_joins - t_leaves
     t_net_str = f"+{t_net}" if t_net >= 0 else str(t_net)
 
     # Surge
     surge_info = ""
-    if state.surge_detector:
-        joins_w, leaves_w = state.surge_detector.get_counts()
+    if app_state.surge_detector:
+        joins_w, leaves_w = app_state.surge_detector.get_counts()
         if joins_w > 0 or leaves_w > 0:
             surge_info = (
                 f"\n⚡ За последние {SURGE_WINDOW_SECONDS // 60} мин: "
@@ -230,13 +230,13 @@ async def cmd_stats(message: Message, bot: Bot, state_fsm: FSMContext = None):
 # --- ПОМОЩЬ ---
 @router.message(F.text == BTN_HELP)
 @router.message(Command("help"))
-async def cmd_help(message: Message, state_fsm: FSMContext = None):
+async def cmd_help(message: Message, state: FSMContext = None):
     """Список доступных команд для админа."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    if state_fsm:
-        await state_fsm.clear()
+    if state:
+        await state.clear()
 
     text = (
         "📋 <b>Доступные команды</b>\n\n"
@@ -259,29 +259,29 @@ async def cmd_help(message: Message, state_fsm: FSMContext = None):
 # --- НОВЫЙ ДИАЛОГ ---
 @router.message(F.text == BTN_NEW)
 @router.message(Command("new"))
-async def cmd_new(message: Message, state_fsm: FSMContext = None):
+async def cmd_new(message: Message, state: FSMContext = None):
     """Очистить память диалога с ИИ."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    if state_fsm:
-        await state_fsm.clear()
+    if state:
+        await state.clear()
 
     user_id = message.from_user.id
-    if user_id in state.messages_history:
-        state.messages_history[user_id].clear()
+    if user_id in app_state.messages_history:
+        app_state.messages_history[user_id].clear()
     await message.answer("🗑 Память очищена. Новый диалог начат!", reply_markup=_main_keyboard())
 
 
 # --- СПРОСИТЬ ИИ (кнопка → ожидание ввода) ---
 @router.message(F.text == BTN_ASK)
-async def btn_ask(message: Message, state_fsm: FSMContext = None):
+async def btn_ask(message: Message, state: FSMContext = None):
     """Нажатие кнопки «Спросить ИИ» — переходим в режим ожидания вопроса."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    if state_fsm:
-        await state_fsm.set_state(BotStates.waiting_ask)
+    if state:
+        await state.set_state(BotStates.waiting_ask)
     await message.answer(
         "✏️ Напиши свой вопрос для ИИ:",
         reply_markup=_cancel_keyboard(),
@@ -306,13 +306,13 @@ async def cmd_ask(message: Message):
 
 
 @router.message(BotStates.waiting_ask)
-async def process_ask_input(message: Message, state_fsm: FSMContext = None):
+async def process_ask_input(message: Message, state: FSMContext = None):
     """Получили текст вопроса после нажатия кнопки «Спросить ИИ»."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    if state_fsm:
-        await state_fsm.clear()
+    if state:
+        await state.clear()
     await _process_ask(message, message.text)
 
 
@@ -321,10 +321,10 @@ async def _process_ask(message: Message, question: str):
     user_id = message.from_user.id
 
     # Инициализация истории для пользователя
-    if user_id not in state.messages_history:
-        state.messages_history[user_id] = deque(maxlen=10)
+    if user_id not in app_state.messages_history:
+        app_state.messages_history[user_id] = deque(maxlen=10)
 
-    history = state.messages_history[user_id]
+    history = app_state.messages_history[user_id]
     history.append({"role": "user", "content": question})
 
     await message.answer("🤔 Думаю...")
@@ -350,13 +350,13 @@ async def _process_ask(message: Message, question: str):
 
 # --- ПОИСК (кнопка → ожидание ввода) ---
 @router.message(F.text == BTN_SEARCH)
-async def btn_search(message: Message, state_fsm: FSMContext = None):
+async def btn_search(message: Message, state: FSMContext = None):
     """Нажатие кнопки «Поиск» — переходим в режим ожидания запроса."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    if state_fsm:
-        await state_fsm.set_state(BotStates.waiting_search)
+    if state:
+        await state.set_state(BotStates.waiting_search)
     await message.answer(
         "🔍 Напиши поисковый запрос:",
         reply_markup=_cancel_keyboard(),
@@ -382,13 +382,13 @@ async def cmd_search(message: Message):
 
 
 @router.message(BotStates.waiting_search)
-async def process_search_input(message: Message, state_fsm: FSMContext = None):
+async def process_search_input(message: Message, state: FSMContext = None):
     """Получили текст запроса после нажатия кнопки «Поиск»."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    if state_fsm:
-        await state_fsm.clear()
+    if state:
+        await state.clear()
     await _process_search(message, message.text)
 
 
@@ -444,13 +444,13 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     logging.info(f"🔔 Новый подписчик: {user.full_name} ({user.id})")
 
     # Только счётчики в памяти — в таблицу пишем раз в день агрегатом
-    state.today_joins.increment()
-    state.periodic_joins.increment()
-    state.save_counters()
+    app_state.today_joins.increment()
+    app_state.periodic_joins.increment()
+    app_state.save_counters()
 
     # Surge detection — алерт только при всплеске
-    if state.surge_detector:
-        is_surge, joins_w, leaves_w = state.surge_detector.record_join()
+    if app_state.surge_detector:
+        is_surge, joins_w, leaves_w = app_state.surge_detector.record_join()
         if is_surge and ADMIN_ID:
             text = (
                 f"🚨 <b>ВСПЛЕСК ПОДПИСОК!</b>\n"
@@ -472,10 +472,10 @@ async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
     logging.info(f"👋 User {action_log}: {user.full_name} ({user.id})")
 
     # Только счётчики в памяти
-    state.today_leaves.increment()
-    state.periodic_leaves.increment()
-    state.save_counters()
+    app_state.today_leaves.increment()
+    app_state.periodic_leaves.increment()
+    app_state.save_counters()
 
     # Учёт в surge detector
-    if state.surge_detector:
-        state.surge_detector.record_leave()
+    if app_state.surge_detector:
+        app_state.surge_detector.record_leave()

@@ -275,12 +275,13 @@ async def cmd_new(message: Message, state_fsm: FSMContext = None):
 
 # --- СПРОСИТЬ ИИ (кнопка → ожидание ввода) ---
 @router.message(F.text == BTN_ASK)
-async def btn_ask(message: Message, state_fsm: FSMContext):
+async def btn_ask(message: Message, state_fsm: FSMContext = None):
     """Нажатие кнопки «Спросить ИИ» — переходим в режим ожидания вопроса."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    await state_fsm.set_state(BotStates.waiting_ask)
+    if state_fsm:
+        await state_fsm.set_state(BotStates.waiting_ask)
     await message.answer(
         "✏️ Напиши свой вопрос для ИИ:",
         reply_markup=_cancel_keyboard(),
@@ -305,12 +306,13 @@ async def cmd_ask(message: Message):
 
 
 @router.message(BotStates.waiting_ask)
-async def process_ask_input(message: Message, state_fsm: FSMContext):
+async def process_ask_input(message: Message, state_fsm: FSMContext = None):
     """Получили текст вопроса после нажатия кнопки «Спросить ИИ»."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    await state_fsm.clear()
+    if state_fsm:
+        await state_fsm.clear()
     await _process_ask(message, message.text)
 
 
@@ -348,12 +350,13 @@ async def _process_ask(message: Message, question: str):
 
 # --- ПОИСК (кнопка → ожидание ввода) ---
 @router.message(F.text == BTN_SEARCH)
-async def btn_search(message: Message, state_fsm: FSMContext):
+async def btn_search(message: Message, state_fsm: FSMContext = None):
     """Нажатие кнопки «Поиск» — переходим в режим ожидания запроса."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    await state_fsm.set_state(BotStates.waiting_search)
+    if state_fsm:
+        await state_fsm.set_state(BotStates.waiting_search)
     await message.answer(
         "🔍 Напиши поисковый запрос:",
         reply_markup=_cancel_keyboard(),
@@ -379,12 +382,13 @@ async def cmd_search(message: Message):
 
 
 @router.message(BotStates.waiting_search)
-async def process_search_input(message: Message, state_fsm: FSMContext):
+async def process_search_input(message: Message, state_fsm: FSMContext = None):
     """Получили текст запроса после нажатия кнопки «Поиск»."""
     if message.from_user.id != ADMIN_ID:
         return
 
-    await state_fsm.clear()
+    if state_fsm:
+        await state_fsm.clear()
     await _process_search(message, message.text)
 
 

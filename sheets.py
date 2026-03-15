@@ -137,10 +137,10 @@ async def write_daily_row(date_str: str, joins: int, leaves: int) -> bool:
             all_rows = await asyncio.to_thread(ws.get_all_values)
             data = all_rows[1:]  # без заголовка
 
-            # Находим предыдущий total
+            # Находим предыдущий total (пропуская запись за ТЕКУЩУЮ дату, если она уже есть)
             prev_total = 0
             for row in reversed(data):
-                if len(row) >= 5 and row[4]:
+                if len(row) >= 5 and row[4] and row[0] != date_str:
                     try:
                         prev_total = int(str(row[4]).replace(" ", "").replace(",", ""))
                         break

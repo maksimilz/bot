@@ -71,30 +71,24 @@ def _cancel_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-# --- СМЕНА СУТОК (00:00) ---
-async def midnight_rollover():
-    """Сбрасывает счётчики за день и записывает итог в таблицу."""
+# --- ЕЖЕДНЕВНАЯ СВОДКА ---
+async def send_daily_report(bot: Bot):
+    """Записывает итог дня в таблицу и отправляет сводку. Вызывается по расписанию в 09:00."""
+    if not ADMIN_ID:
+        return
+
     now = datetime.now(_tz())
-    # День, который ЗАВЕРШИЛСЯ
+    # День, который ЗАВЕРШИЛСЯ (если запускаемся в 09:00 — это вчера)
     yesterday = (now - timedelta(days=1)).strftime("%d.%m.%Y")
+    today = now.strftime("%d.%m.%Y")
 
     # Сохраняем итог вчерашнего дня в таблицу
+    # (today_joins/today_leaves накоплены за прошедший день с прошлого отчета)
     t_joins = app_state.today_joins.reset()
     t_leaves = app_state.today_leaves.reset()
 
     await write_daily_row(yesterday, t_joins, t_leaves)
     app_state.save_counters()  # сохраняем после сброса
-    logging.info(f"🕛 Смена суток: записано за {yesterday} (+{t_joins}/-{t_leaves})")
-
-
-# --- ЕЖЕДНЕВНАЯ СВОДКА (УТРОМ) ---
-async def send_daily_report(bot: Bot):
-    """Отправляет красивую сводку админу из БД."""
-    if not ADMIN_ID:
-        return
-
-    now = datetime.now(_tz())
-    yesterday = (now - timedelta(days=1)).strftime("%d.%m.%Y")
 
     # Читаем последние 7 строк для недельной картины
     last_rows = await read_last_rows(7)
@@ -104,26 +98,20 @@ async def send_daily_report(bot: Bot):
     w_net_str = f"+{w_net}" if w_net >= 0 else str(w_net)
     last_total = last_rows[-1]["total"] if last_rows else 0
 
-    # Ищем во вчерашнем дне (последняя записанная строка должна быть вчерашней)
-    y_joins, y_leaves = 0, 0
-    if last_rows and last_rows[-1]["date"] == yesterday:
-        y_joins = last_rows[-1]["joins"]
-        y_leaves = last_rows[-1]["leaves"]
-        
-    y_net = y_joins - y_leaves
-    y_net_str = f"+{y_net}" if y_net >= 0 else str(y_net)
+    t_net = t_joins - t_leaves
+    t_net_str = f"+{t_net}" if t_net >= 0 else str(t_net)
 
     try:
         text = (
             f"📊 <b>Ежедневная сводка</b>\n\n"
             f"🗓 <b>Вчера ({yesterday}):</b>\n"
-            f"   ➕ {y_joins}  ➖ {y_leaves}  (итого {y_net_str})\n\n"
+            f"   ➕ {t_joins}  ➖ {t_leaves}  (итого {t_net_str})\n\n"
             f"📅 <b>За неделю:</b>\n"
             f"   ➕ {w_joins}  ➖ {w_leaves}  (итого {w_net_str})\n\n"
             f"👥 <b>Подписчиков всего:</b> ~{last_total:,}".replace(",", " ")
         )
         await bot.send_message(ADMIN_ID, text, parse_mode="HTML", disable_notification=True)
-        logging.info(f"✅ Утренняя сводка отправлена.")
+        logging.info(f"✅ Ежедневная сводка: {t_net_str}, всего ~{last_total}")
     except Exception as e:
         logging.error(f"Ошибка при отправке ежедневной сводки: {e}")
 

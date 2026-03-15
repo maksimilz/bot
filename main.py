@@ -22,7 +22,7 @@ from config import (
 import state
 from surge import SurgeDetector, WaveAction
 from sheets import get_stats_sheet
-from handlers import router, send_daily_report, send_periodic_report, midnight_rollover
+from handlers import router, send_daily_report, send_periodic_report
 from web_server import start_web_server
 from llm import close_llm_session
 
@@ -90,14 +90,8 @@ async def main():
     # Инициализируем лист «Статистика» (создаёт если не существует, считает seed)
     await asyncio.to_thread(get_stats_sheet)
 
-    # Настраиваем планировщик
+    # Настраиваем планировщик для ежедневной сводки
     scheduler = AsyncIOScheduler(timezone=str(_tz()))
-    scheduler.add_job(
-        midnight_rollover,
-        'cron',
-        hour=0,
-        minute=0,
-    )
     scheduler.add_job(
         send_daily_report,
         'cron',

@@ -68,30 +68,37 @@ class SurgeDetector:
         self._wave_active = True
         self._wave_joins = initial_joins
         self._wave_leaves = initial_leaves
-        self._wave_start_time = now
+        if self._join_timestamps:
+            self._wave_start_time = self._join_timestamps[0]
+        else:
+            self._wave_start_time = now
         self._last_event_time = now
         self._last_update_time = now
+        
+        # Очищаем окно, чтобы эти события не перетекли в следующую волну
+        self._join_timestamps.clear()
+        self._leave_timestamps.clear()
 
     def record_join(self) -> tuple[bool, int, int]:
         """Записывает подписку и проверяет порог.
         Возвращает (нужен_ли_алерт, подписок_за_окно, отписок_за_окно)."""
         now = time.monotonic()
+
+        # Если волна активна, просто учитываем в волне
+        if self._wave_active:
+            self._wave_joins += 1
+            self._last_event_time = now
+            return False, 0, 0
+
         self._join_timestamps.append(now)
         self._cleanup(now)
         joins = len(self._join_timestamps)
         leaves = len(self._leave_timestamps)
 
-        # Обновляем волну, если она активна
-        if self._wave_active:
-            self._wave_joins += 1
-            self._last_event_time = now
-
         # Проверяем порог для первичного surge-алерта
         if joins >= self.threshold and (now - self._last_alert_time) >= self.cooldown_seconds:
             self._last_alert_time = now
-            # Начинаем волну, если ещё не активна
-            if not self._wave_active:
-                self._start_wave(now, joins, leaves)
+            self._start_wave(now, joins, leaves)
             return True, joins, leaves
 
         return False, joins, leaves
@@ -99,13 +106,15 @@ class SurgeDetector:
     def record_leave(self) -> None:
         """Записывает отписку (не триггерит surge-алерт)."""
         now = time.monotonic()
-        self._leave_timestamps.append(now)
-        self._cleanup(now)
 
         # Учитываем в волне
         if self._wave_active:
             self._wave_leaves += 1
             self._last_event_time = now
+            return
+
+        self._leave_timestamps.append(now)
+        self._cleanup(now)
 
     def check_wave(self) -> tuple[WaveAction, WaveInfo | None]:
         """Проверяет статус волны. Вызывать периодически (каждые 30 сек).
@@ -138,9 +147,17 @@ class SurgeDetector:
             return WaveAction.SEND_UPDATE, wave_info
 
         return WaveAction.NONE, None
+        
+    def is_wave_active(self) -> bool:
+        """Возвращает флаг активности волны."""
+        return self._wave_active
 
     def get_counts(self) -> tuple[int, int]:
         """Текущие счётчики за окно: (joins, leaves)."""
+        if self._wave_active:
+            return self._wave_joins, self._wave_leaves
+            
         now = time.monotonic()
         self._cleanup(now)
         return len(self._join_timestamps), len(self._leave_timestamps)
+

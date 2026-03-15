@@ -194,12 +194,19 @@ async def cmd_stats(message: Message, bot: Bot, state: FSMContext = None):
     # Surge
     surge_info = ""
     if app_state.surge_detector:
-        joins_w, leaves_w = app_state.surge_detector.get_counts()
-        if joins_w > 0 or leaves_w > 0:
+        if app_state.surge_detector.is_wave_active():
+            joins_w, leaves_w = app_state.surge_detector.get_counts()
             surge_info = (
-                f"\n⚡ За последние {SURGE_WINDOW_SECONDS // 60} мин: "
+                f"\n🔥 <b>АКТИВНАЯ ВОЛНА:</b> "
                 f"<b>+{joins_w} / -{leaves_w}</b>"
             )
+        else:
+            joins_w, leaves_w = app_state.surge_detector.get_counts()
+            if joins_w > 0 or leaves_w > 0:
+                surge_info = (
+                    f"\n⚡ За последние {SURGE_WINDOW_SECONDS // 60} мин: "
+                    f"<b>+{joins_w} / -{leaves_w}</b>"
+                )
 
     # Читаем последние 7 дней из таблицы
     last_rows = await read_last_rows(7)

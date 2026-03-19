@@ -72,39 +72,51 @@ def _cancel_keyboard() -> ReplyKeyboardMarkup:
 
 
 # --- ЕЖЕДНЕВНАЯ СВОДКА ---
+async def reset_daily_stats():
+    """Сбрасывает счётчики за день и записывает в таблицу ровно в 00:00."""
+    now = datetime.now(_tz())
+    # В 00:00 "вчера" — это завершившийся день
+    yesterday = (now - timedelta(days=1)).strftime("%d.%m.%Y")
+    
+    t_joins = app_state.today_joins.reset()
+    t_leaves = app_state.today_leaves.reset()
+    
+    await write_daily_row(yesterday, t_joins, t_leaves)
+    app_state.save_counters()
+    logging.info(f"✅ Итоги дня за {yesterday} сброшены и сохранены в таблицу.")
+
+
 async def send_daily_report(bot: Bot):
-    """Записывает итог дня в таблицу и отправляет сводку. Вызывается по расписанию в 09:00."""
+    """Отправляет сводку за вчерашний день. Вызывается по расписанию в 09:00."""
     if not ADMIN_ID:
         return
 
     now = datetime.now(_tz())
-    # День, который ЗАВЕРШИЛСЯ (если запускаемся в 09:00 — это вчера)
-    yesterday = (now - timedelta(days=1)).strftime("%d.%m.%Y")
-    today = now.strftime("%d.%m.%Y")
-
-    # Сохраняем итог вчерашнего дня в таблицу
-    # (today_joins/today_leaves накоплены за прошедший день с прошлого отчета)
-    t_joins = app_state.today_joins.reset()
-    t_leaves = app_state.today_leaves.reset()
-
-    await write_daily_row(yesterday, t_joins, t_leaves)
-    app_state.save_counters()  # сохраняем после сброса
+    yesterday_date = (now - timedelta(days=1)).strftime("%d.%m.%Y")
 
     # Читаем последние 7 строк для недельной картины
     last_rows = await read_last_rows(7)
+    
     w_joins = sum(r["joins"] for r in last_rows)
     w_leaves = sum(r["leaves"] for r in last_rows)
     w_net = w_joins - w_leaves
     w_net_str = f"+{w_net}" if w_net >= 0 else str(w_net)
     last_total = last_rows[-1]["total"] if last_rows else 0
 
-    t_net = t_joins - t_leaves
-    t_net_str = f"+{t_net}" if t_net >= 0 else str(t_net)
+    # Ищем данные за вчерашний день в таблице
+    t_joins, t_leaves, t_net_str = 0, 0, "+0"
+    for r in last_rows:
+        if r["date"] == yesterday_date:
+            t_joins = r["joins"]
+            t_leaves = r["leaves"]
+            t_net_str = f"+{r['net']}" if isinstance(r['net'], int) and r['net'] >= 0 else r['net']
+            # В таблице net уже может быть строкой с плюсом
+            break
 
     try:
         text = (
             f"📊 <b>Ежедневная сводка</b>\n\n"
-            f"🗓 <b>Вчера ({yesterday}):</b>\n"
+            f"🗓 <b>Вчера ({yesterday_date}):</b>\n"
             f"   ➕ {t_joins}  ➖ {t_leaves}  (итого {t_net_str})\n\n"
             f"📅 <b>За неделю:</b>\n"
             f"   ➕ {w_joins}  ➖ {w_leaves}  (итого {w_net_str})\n\n"

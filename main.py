@@ -22,7 +22,7 @@ from config import (
 import state
 from surge import SurgeDetector, WaveAction
 from sheets import get_stats_sheet
-from handlers import router, send_daily_report, send_periodic_report
+from handlers import router, send_daily_report, send_periodic_report, reset_daily_stats
 from web_server import start_web_server
 from llm import close_llm_session
 
@@ -92,6 +92,12 @@ async def main():
 
     # Настраиваем планировщик для ежедневной сводки
     scheduler = AsyncIOScheduler(timezone=str(_tz()))
+    scheduler.add_job(
+        reset_daily_stats,
+        'cron',
+        hour=0,
+        minute=0,
+    )
     scheduler.add_job(
         send_daily_report,
         'cron',

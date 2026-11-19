@@ -11,10 +11,6 @@ except (ValueError, TypeError):
 # --- GOOGLE SHEETS ---
 SHEET_NAME = "График подписчиков"
 
-# --- ЕЖЕДНЕВНАЯ СВОДКА (по МСК) ---
-DAILY_REPORT_HOUR = 9
-DAILY_REPORT_MINUTE = 0
-
 # --- SURGE DETECTION ---
 SURGE_WINDOW_SECONDS = 300    # 5 минут
 SURGE_THRESHOLD = 10          # порог подписчиков

@@ -10,8 +10,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config import (
     TOKEN,
     ADMIN_ID,
-    DAILY_REPORT_HOUR,
-    DAILY_REPORT_MINUTE,
     SURGE_WINDOW_SECONDS,
     SURGE_THRESHOLD,
     SURGE_COOLDOWN_SECONDS,
@@ -21,7 +19,7 @@ from config import (
 import state
 from surge import SurgeDetector, WaveAction
 from sheets import get_stats_sheet
-from handlers import router, send_daily_report, reset_daily_stats
+from handlers import reset_daily_stats, router
 from web_server import start_web_server
 from llm import close_llm_session
 
@@ -89,20 +87,13 @@ async def main():
     # Инициализируем лист «Статистика» (создаёт если не существует, считает seed)
     await asyncio.to_thread(get_stats_sheet)
 
-    # Настраиваем планировщик для ежедневной сводки
+    # Настраиваем запись статистики и проверку всплесков
     scheduler = AsyncIOScheduler(timezone=str(_tz()))
     scheduler.add_job(
         reset_daily_stats,
         'cron',
         hour=0,
         minute=0,
-    )
-    scheduler.add_job(
-        send_daily_report,
-        'cron',
-        hour=DAILY_REPORT_HOUR,
-        minute=DAILY_REPORT_MINUTE,
-        args=[bot],
     )
     scheduler.add_job(
         check_wave_status, 'interval',
@@ -114,10 +105,7 @@ async def main():
         minutes=5,
     )
     scheduler.start()
-    logging.info(
-        f"⏰ Планировщик запущен. Ежедневная сводка в "
-        f"{DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} МСК"
-    )
+    logging.info("⏰ Планировщик запущен. Запись статистики в 00:00 МСК")
 
     # --- Graceful shutdown ---
     shutdown_event = asyncio.Event()
@@ -185,7 +173,6 @@ async def main():
                 ADMIN_ID,
                 f"🤖 Бот перезапущен.\n"
                 f"{status}\n"
-                f"⏰ Ежедневные сводки активированы\n"
                 f"📊 Хранение: агрегаты по дням\n"
                 f"🛡 Graceful shutdown активен",
                 disable_notification=True,

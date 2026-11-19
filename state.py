@@ -53,7 +53,7 @@ class AtomicCounter:
 # Детектор всплесков подписок — создаётся в main()
 surge_detector: "SurgeDetector | None" = None
 
-# Счётчики за ТЕКУЩИЙ ДЕНЬ (сбрасываются в полночь при send_daily_report)
+# Счётчики за текущий день (сбрасываются в полночь при reset_daily_stats)
 today_joins: AtomicCounter = AtomicCounter()
 today_leaves: AtomicCounter = AtomicCounter()
 

@@ -5,7 +5,9 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
+from aiogram.enums import ChatType
 from aiogram.filters import ChatMemberUpdatedFilter, Command, IS_NOT_MEMBER, IS_MEMBER, MEMBER, KICKED
+from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -20,12 +22,12 @@ from config import (
     ADMIN_ID,
     SURGE_WINDOW_SECONDS,
     SURGE_THRESHOLD,
-    PERIODIC_REPORT_HOURS,
     SYSTEM_PROMPT,
 )
 import config
 from sheets import write_daily_row, read_last_rows
 from llm import ask_llm
+from post_formatter import format_social_post
 from web_search import search_web, format_search_context
 import state as app_state
 
@@ -45,6 +47,7 @@ BTN_CANCEL = "❌ Отмена"
 class BotStates(StatesGroup):
     waiting_ask = State()      # ждём текст вопроса для ИИ
     waiting_search = State()   # ждём текст запроса для поиска
+    waiting_post = State()
 
 
 def _tz():
@@ -126,36 +129,6 @@ async def send_daily_report(bot: Bot):
         logging.info(f"✅ Ежедневная сводка: {t_net_str}, всего ~{last_total}")
     except Exception as e:
         logging.error(f"Ошибка при отправке ежедневной сводки: {e}")
-
-
-async def send_periodic_report(bot: Bot):
-    """Мини-сводка каждые N часов. Молчит, если событий не было."""
-    if not ADMIN_ID:
-        return
-
-    # Атомарно читаем и сбрасываем счётчики
-    joins = app_state.periodic_joins.reset()
-    leaves = app_state.periodic_leaves.reset()
-    app_state.save_counters()  # сохраняем после сброса
-
-    if joins == 0 and leaves == 0:
-        return  # Нет событий — молчим
-
-    net = joins - leaves
-    net_str = f"+{net}" if net >= 0 else str(net)
-
-    text = (
-        f"📊 <b>Сводка за {PERIODIC_REPORT_HOURS}ч</b>\n\n"
-        f"➕ Подписок: <b>{joins}</b>\n"
-        f"➖ Отписок: <b>{leaves}</b>\n"
-        f"📈 Чистый рост: <b>{net_str}</b>"
-    )
-
-    try:
-        await bot.send_message(ADMIN_ID, text, parse_mode="HTML", disable_notification=True)
-        logging.info(f"📊 Периодическая сводка: +{joins} / -{leaves}")
-    except Exception as e:
-        logging.error(f"Ошибка отправки периодической сводки: {e}")
 
 
 # === КОМАНДЫ (остаются для удобства + обрабатываем кнопки) ===
@@ -263,13 +236,13 @@ async def cmd_help(message: Message, state: FSMContext = None):
         f"{BTN_ASK} — Задать вопрос ИИ (помнит контекст)\n"
         f"{BTN_SEARCH} — Поиск в интернете через ИИ\n"
         f"{BTN_NEW} — Новый диалог (очистить память ИИ)\n"
+        "/post — Подготовить пост для соцсетей в личном чате\n"
         f"{BTN_HELP} — Этот список команд\n\n"
         "<i>Бот автоматически отслеживает подписки и отписки, "
         "записывает данные в Google Таблицу.</i>\n\n"
         "📬 <b>Уведомления:</b>\n"
         f"⚡ Surge-алерт: ≥{SURGE_THRESHOLD} подписок "
         f"за {SURGE_WINDOW_SECONDS // 60} мин\n"
-        f"📊 Мини-сводка: каждые {PERIODIC_REPORT_HOURS}ч\n"
         "📅 Ежедневная сводка: 09:00 МСК"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=_main_keyboard())
@@ -290,6 +263,42 @@ async def cmd_new(message: Message, state: FSMContext = None):
     if user_id in app_state.messages_history:
         app_state.messages_history[user_id].clear()
     await message.answer("🗑 Память очищена. Новый диалог начат!", reply_markup=_main_keyboard())
+
+
+@router.message(Command("post"), F.chat.type == ChatType.PRIVATE)
+async def cmd_post(message: Message, command: CommandObject, state: FSMContext):
+    if not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+
+    source = (command.args or "").strip()
+    if not source:
+        await state.set_state(BotStates.waiting_post)
+        await message.answer(
+            "Пришли исходный текст одним сообщением. Верну черновик для соцсетей.",
+            reply_markup=_cancel_keyboard(),
+        )
+        return
+
+    await state.clear()
+    await _send_social_post(message, source)
+
+
+async def _send_social_post(message: Message, source: str):
+    parts = await format_social_post(source)
+    if not parts:
+        await message.answer(
+            "Не удалось подготовить черновик. Повтори /post и пришли текст ещё раз.",
+            reply_markup=_main_keyboard(),
+        )
+        return
+
+    for index, part in enumerate(parts):
+        await message.answer(
+            part,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=_main_keyboard() if index == len(parts) - 1 else None,
+        )
 
 
 # --- СПРОСИТЬ ИИ (кнопка → ожидание ввода) ---
@@ -456,6 +465,26 @@ async def _process_search(message: Message, query: str):
         await message.answer(fallback, parse_mode="HTML", reply_markup=_main_keyboard())
 
 
+@router.message(
+    BotStates.waiting_post,
+    F.chat.type == ChatType.PRIVATE,
+    F.text,
+    ~F.text.startswith("/"),
+)
+@router.message(BotStates.waiting_post, F.chat.type == ChatType.PRIVATE, ~F.text)
+async def process_post_input(message: Message, state: FSMContext):
+    if not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+
+    source = (message.text or "").strip()
+    if not source:
+        await message.answer("Пришли исходник текстом.", reply_markup=_cancel_keyboard())
+        return
+
+    await state.clear()
+    await _send_social_post(message, source)
+
+
 # --- СОБЫТИЯ ПОДПИСКИ / ОТПИСКИ ---
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> MEMBER))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):
@@ -464,7 +493,6 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
 
     # Только счётчики в памяти — в таблицу пишем раз в день агрегатом
     app_state.today_joins.increment()
-    app_state.periodic_joins.increment()
     app_state.save_counters()
 
     # Surge detection — алерт только при всплеске
@@ -492,7 +520,6 @@ async def on_user_leave(event: ChatMemberUpdated, bot: Bot):
 
     # Только счётчики в памяти
     app_state.today_leaves.increment()
-    app_state.periodic_leaves.increment()
     app_state.save_counters()
 
     # Учёт в surge detector

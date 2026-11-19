@@ -57,10 +57,6 @@ surge_detector: "SurgeDetector | None" = None
 today_joins: AtomicCounter = AtomicCounter()
 today_leaves: AtomicCounter = AtomicCounter()
 
-# Счётчики для периодической мини-сводки (сбрасываются после каждой мини-сводки)
-periodic_joins: AtomicCounter = AtomicCounter()
-periodic_leaves: AtomicCounter = AtomicCounter()
-
 # История сообщений для контекста LLM (user_id -> deque)
 messages_history: dict[int, deque] = {}
 
@@ -70,8 +66,6 @@ def save_counters() -> None:
     data = {
         "today_joins": today_joins.value,
         "today_leaves": today_leaves.value,
-        "periodic_joins": periodic_joins.value,
-        "periodic_leaves": periodic_leaves.value,
     }
     try:
         with open(_PERSIST_FILE, "w", encoding="utf-8") as f:
@@ -89,11 +83,8 @@ def load_counters() -> None:
             data = json.load(f)
         today_joins.value = data.get("today_joins", 0)
         today_leaves.value = data.get("today_leaves", 0)
-        periodic_joins.value = data.get("periodic_joins", 0)
-        periodic_leaves.value = data.get("periodic_leaves", 0)
         logging.info(
-            f"📂 Счётчики восстановлены: сегодня +{today_joins.value}/-{today_leaves.value}, "
-            f"периодические +{periodic_joins.value}/-{periodic_leaves.value}"
+            f"📂 Счётчики восстановлены: сегодня +{today_joins.value}/-{today_leaves.value}"
         )
     except Exception as e:
         logging.warning(f"Не удалось загрузить счётчики: {e}")

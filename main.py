@@ -17,12 +17,11 @@ from config import (
     SURGE_COOLDOWN_SECONDS,
     SURGE_QUIET_PERIOD,
     SURGE_UPDATE_INTERVAL,
-    PERIODIC_REPORT_HOURS,
 )
 import state
 from surge import SurgeDetector, WaveAction
 from sheets import get_stats_sheet
-from handlers import router, send_daily_report, send_periodic_report, reset_daily_stats
+from handlers import router, send_daily_report, reset_daily_stats
 from web_server import start_web_server
 from llm import close_llm_session
 
@@ -106,11 +105,6 @@ async def main():
         args=[bot],
     )
     scheduler.add_job(
-        send_periodic_report, 'interval',
-        hours=PERIODIC_REPORT_HOURS,
-        args=[bot],
-    )
-    scheduler.add_job(
         check_wave_status, 'interval',
         seconds=30,
         args=[bot],
@@ -122,8 +116,7 @@ async def main():
     scheduler.start()
     logging.info(
         f"⏰ Планировщик запущен. Ежедневная сводка в "
-        f"{DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} МСК, "
-        f"мини-сводка каждые {PERIODIC_REPORT_HOURS}ч"
+        f"{DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} МСК"
     )
 
     # --- Graceful shutdown ---

@@ -59,8 +59,9 @@ def _split_post(text: str) -> list[str]:
 async def format_social_post(source: str) -> list[str]:
     draft = await ask_llm(
         [{"role": "system", "content": _SYSTEM_PROMPT}, {"role": "user", "content": source}],
-        temperature=0.2,
+        temperature=None,
         max_tokens=5000,
+        model="openai/gpt-6-luna",
     )
     if not draft or not draft.strip():
         return []

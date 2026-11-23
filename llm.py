@@ -47,16 +47,19 @@ async def close_llm_session() -> None:
 
 async def ask_llm(
     messages: list[dict],
-    temperature: float = 0.7,
+    temperature: float | None = 0.7,
     max_tokens: int = 1024,
+    *,
+    model: str | None = None,
 ) -> str | None:
     """
     Отправляет запрос к OpenRouter API и возвращает текст ответа.
 
     Args:
         messages: История сообщений [{"role": "user", "content": "..."}, ...]
-        temperature: Температура генерации (0.0 — детерминированно, 1.0 — креативно).
+        temperature: Температура генерации. None оставляет настройку провайдера.
         max_tokens: Максимальное количество токенов в ответе.
+        model: Модель для этого запроса. None использует конфигурацию бота.
 
     Returns:
         Текст ответа модели или None при ошибке.
@@ -71,11 +74,12 @@ async def ask_llm(
     }
 
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": model or OPENROUTER_MODEL,
         "messages": messages,
         "max_tokens": max_tokens,
-        "temperature": temperature,
     }
+    if temperature is not None:
+        payload["temperature"] = temperature
 
     try:
         session = _get_session()

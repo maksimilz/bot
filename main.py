@@ -5,6 +5,8 @@ import sys
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, BotCommandScopeDefault
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import (
@@ -64,6 +66,35 @@ async def check_wave_status(bot: Bot):
         logging.error(f"Ошибка отправки wave-алерта: {e}")
 
 
+async def register_post_menu(bot: Bot):
+    if ADMIN_ID <= 0:
+        return
+
+    admin_scope = BotCommandScopeChat(chat_id=ADMIN_ID)
+    scopes = (admin_scope, BotCommandScopeAllPrivateChats(), BotCommandScopeDefault())
+
+    try:
+        default_commands = []
+        russian_commands = []
+        for scope in scopes:
+            localized = await bot.get_my_commands(scope=scope, language_code="ru") if not russian_commands else []
+            common = await bot.get_my_commands(scope=scope) if not default_commands else []
+            russian_commands = russian_commands or localized or common
+            default_commands = default_commands or common
+            if russian_commands and default_commands:
+                break
+
+        post = BotCommand(command="post", description="Подготовить пост для соцсетей")
+        for language_code, commands in ((None, default_commands), ("ru", russian_commands)):
+            if not any(command.command == post.command for command in commands):
+                await bot.set_my_commands(
+                    [*commands, post], scope=admin_scope, language_code=language_code
+                )
+                logging.info("Команда /post добавлена в меню администратора (%s)", language_code or "default")
+    except TelegramAPIError as error:
+        logging.warning("Не удалось обновить меню команд администратора: %s", error)
+
+
 async def main():
     if not TOKEN:
         sys.exit("Ошибка: Не задан BOT_TOKEN")
@@ -71,6 +102,7 @@ async def main():
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
+    dp.startup.register(register_post_menu)
 
     # Инициализируем глобальное состояние
     state.surge_detector = SurgeDetector(

@@ -40,6 +40,7 @@ BTN_ASK = "🤖 Спросить ИИ"
 BTN_SEARCH = "🔍 Поиск"
 BTN_NEW = "🗑 Новый диалог"
 BTN_HELP = "❓ Помощь"
+BTN_POST = "📝 Подготовить пост"
 BTN_CANCEL = "❌ Отмена"
 
 
@@ -54,13 +55,13 @@ def _tz():
     return ZoneInfo("Europe/Moscow")
 
 
-def _main_keyboard() -> ReplyKeyboardMarkup:
+def main_keyboard() -> ReplyKeyboardMarkup:
     """Основная клавиатура с кнопками."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ASK)],
             [KeyboardButton(text=BTN_SEARCH), KeyboardButton(text=BTN_NEW)],
-            [KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=BTN_POST), KeyboardButton(text=BTN_HELP)],
         ],
         resize_keyboard=True,
     )
@@ -102,7 +103,7 @@ async def cmd_start(message: Message, state: FSMContext = None):
         await state.clear()
     await message.answer(
         "👋 Привет! Используй кнопки ниже для управления ботом.",
-        reply_markup=_main_keyboard(),
+        reply_markup=main_keyboard(),
     )
 
 
@@ -114,7 +115,7 @@ async def btn_cancel(message: Message, state: FSMContext = None):
 
     if state:
         await state.clear()
-    await message.answer("↩️ Отменено.", reply_markup=_main_keyboard())
+    await message.answer("↩️ Отменено.", reply_markup=main_keyboard())
 
 
 # --- СТАТИСТИКА ---
@@ -174,7 +175,7 @@ async def cmd_stats(message: Message, bot: Bot, state: FSMContext = None):
         f"   Итого: ➕{w_joins} ➖{w_leaves} ({w_net_str})\n\n"
         f"👥 <b>Подписчиков ~{last_total:,}</b>".replace(",", " ")
     )
-    await message.answer(text, parse_mode="HTML", reply_markup=_main_keyboard())
+    await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
 
 # --- ПОМОЩЬ ---
@@ -194,7 +195,7 @@ async def cmd_help(message: Message, state: FSMContext = None):
         f"{BTN_ASK} — Задать вопрос ИИ (помнит контекст)\n"
         f"{BTN_SEARCH} — Поиск в интернете через ИИ\n"
         f"{BTN_NEW} — Новый диалог (очистить память ИИ)\n"
-        "/post — Подготовить пост для соцсетей в личном чате\n"
+        f"{BTN_POST} (/post) — Черновик для соцсетей в личном чате\n"
         f"{BTN_HELP} — Этот список команд\n\n"
         "<i>Бот автоматически отслеживает подписки и отписки, "
         "записывает данные в Google Таблицу.</i>\n\n"
@@ -202,7 +203,7 @@ async def cmd_help(message: Message, state: FSMContext = None):
         f"⚡ Surge-алерт: ≥{SURGE_THRESHOLD} подписок "
         f"за {SURGE_WINDOW_SECONDS // 60} мин"
     )
-    await message.answer(text, parse_mode="HTML", reply_markup=_main_keyboard())
+    await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
 
 # --- НОВЫЙ ДИАЛОГ ---
@@ -219,15 +220,16 @@ async def cmd_new(message: Message, state: FSMContext = None):
     user_id = message.from_user.id
     if user_id in app_state.messages_history:
         app_state.messages_history[user_id].clear()
-    await message.answer("🗑 Память очищена. Новый диалог начат!", reply_markup=_main_keyboard())
+    await message.answer("🗑 Память очищена. Новый диалог начат!", reply_markup=main_keyboard())
 
 
+@router.message(F.text == BTN_POST, F.chat.type == ChatType.PRIVATE)
 @router.message(Command("post"), F.chat.type == ChatType.PRIVATE)
-async def cmd_post(message: Message, command: CommandObject, state: FSMContext):
+async def cmd_post(message: Message, state: FSMContext, command: CommandObject | None = None):
     if not message.from_user or message.from_user.id != ADMIN_ID:
         return
 
-    source = (command.args or "").strip()
+    source = (command.args or "").strip() if command else ""
     if not source:
         await state.set_state(BotStates.waiting_post)
         await message.answer(
@@ -245,7 +247,7 @@ async def _send_social_post(message: Message, source: str):
     if not parts:
         await message.answer(
             "Не удалось подготовить черновик. Повтори /post и пришли текст ещё раз.",
-            reply_markup=_main_keyboard(),
+            reply_markup=main_keyboard(),
         )
         return
 
@@ -254,7 +256,7 @@ async def _send_social_post(message: Message, source: str):
             part,
             parse_mode="HTML",
             disable_web_page_preview=True,
-            reply_markup=_main_keyboard() if index == len(parts) - 1 else None,
+            reply_markup=main_keyboard() if index == len(parts) - 1 else None,
         )
 
 
@@ -283,7 +285,7 @@ async def cmd_ask(message: Message):
     if not question:
         await message.answer(
             "✏️ Напиши вопрос после /ask\n\nПример: /ask Какая погода в Москве?",
-            reply_markup=_main_keyboard(),
+            reply_markup=main_keyboard(),
         )
         return
 
@@ -322,14 +324,14 @@ async def _process_ask(message: Message, question: str):
 
     if answer:
         history.append({"role": "assistant", "content": answer})
-        await message.answer(answer, reply_markup=_main_keyboard())
+        await message.answer(answer, reply_markup=main_keyboard())
     else:
         # Если ошибка, удаляем последний вопрос из истории, чтобы не засорять
         if history and history[-1]["role"] == "user":
             history.pop()
         await message.answer(
             f"❌ Не удалось получить ответ от LLM. Проверь баланс/ключ.\nМодель: {config.OPENROUTER_MODEL}",
-            reply_markup=_main_keyboard(),
+            reply_markup=main_keyboard(),
         )
 
 
@@ -359,7 +361,7 @@ async def cmd_search(message: Message):
         await message.answer(
             "🔍 Напиши запрос после /search\n\n"
             "Пример: /search последние новости Python",
-            reply_markup=_main_keyboard(),
+            reply_markup=main_keyboard(),
         )
         return
 
@@ -387,7 +389,7 @@ async def _process_search(message: Message, query: str):
     if not results:
         await message.answer(
             "❌ Ничего не найдено. Попробуй другой запрос.",
-            reply_markup=_main_keyboard(),
+            reply_markup=main_keyboard(),
         )
         return
 
@@ -410,7 +412,7 @@ async def _process_search(message: Message, query: str):
     answer = await ask_llm(messages=[system_msg, user_msg], max_tokens=1500)
 
     if answer:
-        await message.answer(answer, reply_markup=_main_keyboard())
+        await message.answer(answer, reply_markup=main_keyboard())
     else:
         # Если LLM не ответил, покажем сырые результаты
         fallback = "🔍 <b>Результаты поиска:</b>\n\n"
@@ -419,7 +421,7 @@ async def _process_search(message: Message, query: str):
             url = r.get("href", "")
             snippet = r.get("body", "")
             fallback += f"📌 <b>{title}</b>\n{snippet}\n{url}\n\n"
-        await message.answer(fallback, parse_mode="HTML", reply_markup=_main_keyboard())
+        await message.answer(fallback, parse_mode="HTML", reply_markup=main_keyboard())
 
 
 @router.message(

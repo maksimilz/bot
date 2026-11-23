@@ -21,7 +21,7 @@ from config import (
 import state
 from surge import SurgeDetector, WaveAction
 from sheets import get_stats_sheet
-from handlers import reset_daily_stats, router
+from handlers import main_keyboard, reset_daily_stats, router
 from web_server import start_web_server
 from llm import close_llm_session
 
@@ -208,6 +208,7 @@ async def main():
                 f"📊 Хранение: агрегаты по дням\n"
                 f"🛡 Graceful shutdown активен",
                 disable_notification=True,
+                reply_markup=main_keyboard() if ADMIN_ID > 0 else None,
             )
         except Exception as e:
             logging.error(f"Ошибка старта: {e}")
